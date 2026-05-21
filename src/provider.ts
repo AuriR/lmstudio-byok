@@ -1,4 +1,4 @@
-import { CancellationToken, LanguageModelChatMessage, LanguageModelChatMessageRole, LanguageModelTextPart, LanguageModelToolCallPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
+import { CancellationToken, LanguageModelChatMessageRole, LanguageModelTextPart, LanguageModelToolCallPart, LanguageModelToolResultPart, LanguageModelDataPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
 import { LMStudioClient } from '@lmstudio/sdk';
 import { encode } from 'gpt-tokenizer';
 
@@ -19,6 +19,86 @@ function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxO
 			imageInput: false, // LM Studio models vary, but default to false for safety
 		}
 	};
+}
+
+const textDecoder = new TextDecoder();
+
+const userRequestPattern = /<userRequest>([\s\S]*?)<\/userRequest>/i;
+
+function serializeUnknownPart(part: unknown): string {
+	if (part instanceof LanguageModelTextPart) {
+		return part.value;
+	}
+
+	if (part instanceof LanguageModelToolCallPart) {
+		return `[Tool Call: ${part.name}(${JSON.stringify(part.input)})]`;
+	}
+
+	if (part instanceof LanguageModelToolResultPart) {
+		const content = part.content.map(item => serializeUnknownPart(item)).filter(Boolean).join('');
+		return `[Tool Result ${part.callId}: ${content}]`;
+	}
+
+	if (part instanceof LanguageModelDataPart) {
+		if (part.mimeType.startsWith('text/')) {
+			return textDecoder.decode(part.data);
+		}
+
+		if (part.mimeType === 'application/json') {
+			try {
+				return JSON.stringify(JSON.parse(textDecoder.decode(part.data)));
+			} catch {
+				return textDecoder.decode(part.data);
+			}
+		}
+
+		return `[Data: ${part.mimeType}]`;
+	}
+
+	if (typeof part === 'string') {
+		return part;
+	}
+
+	if (part && typeof part === 'object') {
+		try {
+			return JSON.stringify(part);
+		} catch {
+			return '[Unsupported object part]';
+		}
+	}
+
+	return '';
+}
+
+function toLmStudioRole(role: number): 'user' | 'assistant' | 'system' {
+	switch (role) {
+		case LanguageModelChatMessageRole.User:
+			return 'user';
+		case LanguageModelChatMessageRole.Assistant:
+			return 'assistant';
+		case 3:
+			return 'system';
+		default:
+			return 'user';
+	}
+}
+
+function prioritizeExplicitUserRequest(content: string): string {
+	const match = userRequestPattern.exec(content);
+	if (!match) {
+		return content;
+	}
+
+	const explicitRequest = match[1].trim();
+	if (!explicitRequest) {
+		return content;
+	}
+
+	return [
+		`Latest user request:\n${explicitRequest}`,
+		'Additional request context:',
+		content,
+	].join('\n\n');
 }
 
 export class LMStudioChatModelProvider implements LanguageModelChatProvider {
@@ -77,6 +157,35 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			this.output.appendLine(`[${new Date().toISOString()}] ERROR ${msg}: ${detail}`);
 		}
 		console.error(`LM Studio: ${msg}`, err);
+	}
+
+	private syncCachedModelMetadata(modelId: string, maxInputTokens: number): void {
+		if (!this.cachedModels) {
+			return;
+		}
+
+		const updatedModels = this.cachedModels.map(existingModel => {
+			if (existingModel.id !== modelId || existingModel.maxInputTokens === maxInputTokens) {
+				return existingModel;
+			}
+
+			const maxOutputTokens = Math.min(8192, Math.floor(maxInputTokens / 4));
+			return {
+				...existingModel,
+				maxInputTokens,
+				maxOutputTokens,
+			};
+		});
+
+		const didChange = updatedModels.some((existingModel, index) => existingModel !== this.cachedModels?.[index]);
+		if (!didChange) {
+			return;
+		}
+
+		this.cachedModels = updatedModels;
+		this.cacheTimestamp = Date.now();
+		this.log(`Updated cached metadata for ${modelId} to context length ${maxInputTokens}`);
+		this._onDidChange.fire();
 	}
 
 	private ensureClient(): LMStudioClient | null {
@@ -284,7 +393,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 	async provideLanguageModelChatResponse(
 		model: LanguageModelChatInformation,
-		messages: Array<LanguageModelChatMessage>,
+		messages: readonly LanguageModelChatRequestMessage[],
 		options: ProvideLanguageModelChatResponseOptions,
 		progress: Progress<LanguageModelResponsePart>,
 		token: CancellationToken
@@ -314,37 +423,14 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		try {
 		// Convert VS Code messages to LM Studio chat format
 		const chatHistory = messages.map((msg, index) => {
-			let content: string;
-			if (Array.isArray(msg.content)) {
-				content = msg.content.map(part => {
-					if (part instanceof LanguageModelTextPart) {
-						return part.value;
-					} else if (part instanceof LanguageModelToolCallPart) {
-						return `[Tool Call: ${part.name}(${JSON.stringify(part.input)})]`;
-					}
-					return '';
-				}).join('');
-			} else {
-				content = msg.content;
-			}
-
-			// Map VS Code roles to LM Studio roles properly
-			let role: 'user' | 'assistant' | 'system';
-			switch (msg.role) {
-				case LanguageModelChatMessageRole.User:
-					role = 'user';
-					break;
-				case LanguageModelChatMessageRole.Assistant:
-					role = 'assistant';
-					break;
-				default:
-					// Treat unknown roles as user to avoid errors
-					role = 'user';
-					break;
-			}
+			const role = toLmStudioRole(Number(msg.role));
+			const baseContent = msg.content.map(part => serializeUnknownPart(part)).filter(Boolean).join('\n\n');
+			const content = role === 'user'
+				? prioritizeExplicitUserRequest(baseContent)
+				: baseContent;
 
 			const convertedMessage = { role, content };
-			this.log(`Message ${index}: role=${msg.role}->${role} content=${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
+			this.log(`Message ${index}: role=${msg.role}->${role} parts=${msg.content.length} content=${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
 			return convertedMessage;
 		});			// Get a model instance - try to get the requested model or use the first available one
 			let llmModel;
@@ -369,6 +455,16 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 					this.log(`Requested model '${model.id}' not found, using: ${llmModel.identifier}`);
 				} else {
 					this.log(`Using requested model: ${llmModel.identifier}`);
+				}
+
+				try {
+					const actualContextLength = await llmModel.getContextLength();
+					if (actualContextLength !== model.maxInputTokens) {
+						this.log(`Model context length changed from ${model.maxInputTokens} to ${actualContextLength}; refreshing cached metadata`);
+						this.syncCachedModelMetadata(llmModel.identifier, actualContextLength);
+					}
+				} catch (contextError) {
+					this.logError(`Could not refresh context length for ${llmModel.identifier}`, contextError);
 				}
 
 			} catch (loadError) {
@@ -518,15 +614,13 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		}
 	}
 
-	async provideTokenCount(model: LanguageModelChatInformation, text: string | LanguageModelChatMessage, _token: CancellationToken): Promise<number> {
+	async provideTokenCount(model: LanguageModelChatInformation, text: string | LanguageModelChatRequestMessage, _token: CancellationToken): Promise<number> {
 		try {
 			let content: string;
 			if (typeof text === 'string') {
 				content = text;
 			} else {
-				content = Array.isArray(text.content)
-					? text.content.map(part => part instanceof LanguageModelTextPart ? part.value : '').join('')
-					: text.content;
+				content = text.content.map((part: unknown) => serializeUnknownPart(part)).join('');
 			}
 
 			// Use gpt-tokenizer for approximation since we don't know the exact tokenizer
@@ -539,9 +633,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			if (typeof text === 'string') {
 				content = text;
 			} else {
-				content = Array.isArray(text.content)
-					? text.content.map(part => part instanceof LanguageModelTextPart ? part.value : '').join('')
-					: text.content;
+				content = text.content.map((part: unknown) => serializeUnknownPart(part)).join('');
 			}
 			// Rough estimation: 1 token per 4 characters
 			return Math.ceil(content.length / 4);
