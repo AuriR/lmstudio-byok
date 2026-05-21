@@ -1,7 +1,3 @@
-I'll create a proper Architecture.md file in the docs/ folder with all the requested sections and content.
-
-<replace_string_in_file filePath="c:\\Dev\\lmstudio-byok\\docs\\Architecture.md" oldString="# Architecture Overview
-
 ## Table of Contents
 1. Revision History
 2. Executive Overview
