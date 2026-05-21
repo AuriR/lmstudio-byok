@@ -5,7 +5,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const provider = new LMStudioChatModelProvider();
 
 	// Register the chat model provider
-	const disposable = vscode.lm.registerChatModelProvider('lmstudio', provider);
+	const disposable = vscode.lm.registerLanguageModelChatProvider('lmstudio', provider);
 	context.subscriptions.push(disposable);
 
 	// Command to refresh models

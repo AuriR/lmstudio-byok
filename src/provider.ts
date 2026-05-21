@@ -1,24 +1,27 @@
-import { CancellationToken, LanguageModelChatMessage, LanguageModelChatMessageRole, LanguageModelTextPart, LanguageModelToolCallPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel } from "vscode";
-import { ChatResponseFragment2, LanguageModelChatInformation, LanguageModelChatProvider2, LanguageModelChatRequestHandleOptions } from "vscode";
+import { CancellationToken, LanguageModelChatMessage, LanguageModelChatMessageRole, LanguageModelTextPart, LanguageModelToolCallPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
 import { LMStudioClient } from '@lmstudio/sdk';
 import { encode } from 'gpt-tokenizer';
 
 function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxOutputTokens: number, supportsTools = true): LanguageModelChatInformation {
 	return {
 		id,
-		name,
+		// Prefix the display name with BYOK to avoid confusion
+		name: `BYOK: ${name}`,
+		// family MUST match the vendor from package.json languageModels contribution
 		family: "lmstudio",
 		maxInputTokens,
 		maxOutputTokens,
 		version: "1.0.0",
+		// Required for models to appear in the model picker
+		isUserSelectable: true,
 		capabilities: {
 			toolCalling: supportsTools,
-			vision: false, // LM Studio models vary, but default to false for safety
+			imageInput: false, // LM Studio models vary, but default to false for safety
 		}
 	};
 }
 
-export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
+export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private client: LMStudioClient | null = null;
 	private lastBaseUrl: string | null = null;
 	private lastApiKey: string | null = null;
@@ -29,7 +32,8 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 	private output: OutputChannel;
 	private verbose = false;
 
-	readonly onDidChange = this._onDidChange.event;
+	// Must match the property name expected by LanguageModelChatProvider interface
+	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
 
 	constructor() {
 		this.output = window.createOutputChannel('LM Studio');
@@ -129,12 +133,13 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 		const configUrl = config.get<string>('baseUrl');
 		if (configUrl) {
 			this.log('Using base URL from VS Code settings');
-			return configUrl;
+			// Convert http/https to ws/wss for WebSocket protocol
+			return configUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
 		}
 
 		// Fall back to default
 		this.log('Using default base URL');
-		return 'http://localhost:1234';
+		return 'ws://localhost:1234';
 	}
 
 	private getApiKey(): string | null {
@@ -213,7 +218,11 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 			if (models.length > 0) {
 				this.cachedModels = models;
 				this.cacheTimestamp = now;
-				return models;
+					this.cachedModels = models;
+					this.cacheTimestamp = now;
+					// Notify VS Code that the model list has changed
+					this._onDidChange.fire();
+					return models;
 			} else {
 				this.log('No models are currently loaded in LM Studio');
 				const fallbackModels = [
@@ -221,7 +230,8 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 				];
 				this.cachedModels = fallbackModels;
 				this.cacheTimestamp = now;
-				return fallbackModels;
+					this._onDidChange.fire();
+					return fallbackModels;
 			}
 
 		} catch (error) {
@@ -247,6 +257,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 			];
 			this.cachedModels = fallbackModels;
 			this.cacheTimestamp = now;
+			this._onDidChange.fire();
 			return fallbackModels;
 		}
 	}
@@ -262,11 +273,20 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 		this._onDidChange.fire();
 	}
 
+	/**
+	 * Get the list of available language models provided by this provider
+	 */
+	async provideLanguageModelChatInformation(_options: { silent: boolean; }, _token: CancellationToken): Promise<LanguageModelChatInformation[]> {
+		// This method is called by VS Code to get the initial list of models
+		// We can return cached models or fetch fresh ones
+		return this.prepareLanguageModelChat(_options, _token);
+	}
+
 	async provideLanguageModelChatResponse(
 		model: LanguageModelChatInformation,
 		messages: Array<LanguageModelChatMessage>,
-		options: LanguageModelChatRequestHandleOptions,
-		progress: Progress<ChatResponseFragment2>,
+		options: ProvideLanguageModelChatResponseOptions,
+		progress: Progress<LanguageModelResponsePart>,
 		token: CancellationToken
 	): Promise<void> {
 		// Ensure client is initialized with current settings
@@ -275,22 +295,19 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 		this.log(`Chat request started with model='${model.id}' messages=${messages.length} maxTokens=${options.modelOptions?.maxTokens}`);
 
 		if (!client) {
-			progress.report({
-				index: 0,
-				part: new LanguageModelTextPart(
-					"🚨 **LM Studio Server Not Started**\\n\\n" +
-					"**Quick Fix Steps:**\\n" +
-					"1. 🚀 **Open LM Studio application**\\n" +
-					"2. 🌐 **Click the 'Local Server' tab at the top**\\n" +
-					"3. ▶️ **Click 'Start Server' button**\\n" +
-					"4. 📱 **Load a model** (click 'Select a model' if none loaded)\\n" +
-					"5. 🔄 **Try your chat request again**\\n\\n" +
-					"**Current settings:**\\n" +
-					`• Connecting to: ${this.getBaseUrl()}\\n` +
-					`• API Key: ${this.getApiKey() ? 'Configured' : 'None (OK for local)'}\\n\\n` +
-					"💡 **Tip:** The server must be running AND have a model loaded to work!"
-				)
-			});
+			progress.report(new LanguageModelTextPart(
+				"🚨 **LM Studio Server Not Started**\\n\\n" +
+				"**Quick Fix Steps:**\\n" +
+				"1. 🚀 **Open LM Studio application**\\n" +
+				"2. 🌐 **Click the 'Local Server' tab at the top**\\n" +
+				"3. ▶️ **Click 'Start Server' button**\\n" +
+				"4. 📱 **Load a model** (click 'Select a model' if none loaded)\\n" +
+				"5. 🔄 **Try your chat request again**\\n\\n" +
+				"**Current settings:**\\n" +
+				`• Connecting to: ${this.getBaseUrl()}\\n` +
+				`• API Key: ${this.getApiKey() ? 'Configured' : 'None (OK for local)'}\\n\\n` +
+				"💡 **Tip:** The server must be running AND have a model loaded to work!"
+			));
 			return;
 		}
 
@@ -377,15 +394,11 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 			// Helper function to flush accumulated content
 			const flushContent = () => {
 				if (accumulatedContent.trim().length > 0) {
-					this.log(`Flushing batch ${index}: "${accumulatedContent.substring(0, 50)}${accumulatedContent.length > 50 ? '...' : ''}"`);
+					this.log(`Flushing batch: "${accumulatedContent.substring(0, 50)}${accumulatedContent.length > 50 ? '...' : ''}"`);
 					try {
-						progress.report({
-							index: 0,
-							part: new LanguageModelTextPart(accumulatedContent)
-						});
+						progress.report(new LanguageModelTextPart(accumulatedContent));
 						receivedChars += accumulatedContent.length;
 						accumulatedContent = '';
-						index++;
 					} catch (error) {
 						this.logError('Error reporting fragment', error);
 					}
@@ -501,10 +514,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider2 {
 				}
 			}
 
-			progress.report({
-				index: 0,
-				part: new LanguageModelTextPart(errorMessage)
-			});
+			progress.report(new LanguageModelTextPart(errorMessage));
 		}
 	}
 

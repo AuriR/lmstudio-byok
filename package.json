@@ -22,7 +22,7 @@
 		"onStartupFinished"
 	],
 	"contributes": {
-		"languageModels": [
+		"languageModelChatProviders": [
 			{
 				"vendor": "lmstudio",
 				"displayName": "LM Studio"
@@ -50,8 +50,8 @@
 			"properties": {
 				"lmstudio.baseUrl": {
 					"type": "string",
-					"default": "http://localhost:1234",
-					"description": "The base URL for your LM Studio server. Default is http://localhost:1234"
+					"default": "ws://localhost:1234",
+					"description": "The base URL for your LM Studio server. Use WebSocket protocol (ws:// or wss://). Default is ws://localhost:1234"
 				},
 				"lmstudio.apiKey": {
 					"type": "string",
