@@ -1,4 +1,4 @@
-import { CancellationToken, LanguageModelChatMessageRole, LanguageModelTextPart, LanguageModelToolCallPart, LanguageModelToolResultPart, LanguageModelDataPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
+import { CancellationToken, LanguageModelChatMessageRole, LanguageModelChatTool, LanguageModelChatToolMode, LanguageModelTextPart, LanguageModelToolCallPart, LanguageModelToolResultPart, LanguageModelDataPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, StatusBarAlignment, StatusBarItem, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
 import { LMStudioClient } from '@lmstudio/sdk';
 import { encode } from 'gpt-tokenizer';
 
@@ -24,8 +24,40 @@ function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxO
 const textDecoder = new TextDecoder();
 
 const userRequestPattern = /<userRequest>([\s\S]*?)<\/userRequest>/i;
+const DEFAULT_MAX_TOOL_RESULT_TOKENS = 8000;
 
-function serializeUnknownPart(part: unknown): string {
+function estimateTokenCount(text: string): number {
+	try {
+		return encode(text).length;
+	} catch {
+		return Math.ceil(text.length / 4);
+	}
+}
+
+function truncateTextToTokenBudget(text: string, maxTokens: number): string {
+	if (maxTokens <= 0 || !text) {
+		return text;
+	}
+
+	const estimatedTokens = estimateTokenCount(text);
+	if (estimatedTokens <= maxTokens) {
+		return text;
+	}
+
+	const targetChars = Math.max(1200, Math.floor(text.length * (maxTokens / estimatedTokens)));
+	const headChars = Math.max(400, Math.floor(targetChars * 0.7));
+	const tailChars = Math.max(200, targetChars - headChars);
+
+	return [
+		text.slice(0, headChars),
+		'',
+		`[LM Studio note: truncated tool result from ~${estimatedTokens} tokens to keep local-model context manageable.]`,
+		'',
+		text.slice(-tailChars),
+	].join('\n');
+}
+
+function serializeUnknownPart(part: unknown, toolResultTokenLimit?: number): string {
 	if (part instanceof LanguageModelTextPart) {
 		return part.value;
 	}
@@ -35,8 +67,9 @@ function serializeUnknownPart(part: unknown): string {
 	}
 
 	if (part instanceof LanguageModelToolResultPart) {
-		const content = part.content.map(item => serializeUnknownPart(item)).filter(Boolean).join('');
-		return `[Tool Result ${part.callId}: ${content}]`;
+		const content = part.content.map(item => serializeUnknownPart(item, toolResultTokenLimit)).filter(Boolean).join('');
+		const boundedContent = toolResultTokenLimit ? truncateTextToTokenBudget(content, toolResultTokenLimit) : content;
+		return `[Tool Result ${part.callId}: ${boundedContent}]`;
 	}
 
 	if (part instanceof LanguageModelDataPart) {
@@ -101,6 +134,121 @@ function prioritizeExplicitUserRequest(content: string): string {
 	].join('\n\n');
 }
 
+function toLmStudioToolParameters(inputSchema?: object): {
+	type: 'object';
+	properties: Record<string, any>;
+	required?: string[];
+	additionalProperties?: boolean;
+	$defs?: Record<string, any>;
+} | undefined {
+	if (!inputSchema || typeof inputSchema !== 'object') {
+		return undefined;
+	}
+
+	const schema = inputSchema as Record<string, unknown>;
+	if (schema.type !== 'object' || !schema.properties || typeof schema.properties !== 'object') {
+		return undefined;
+	}
+
+	const required = Array.isArray(schema.required)
+		? schema.required.filter((value): value is string => typeof value === 'string')
+		: undefined;
+
+	return {
+		type: 'object',
+		properties: schema.properties as Record<string, any>,
+		required: required && required.length > 0 ? required : undefined,
+		additionalProperties: typeof schema.additionalProperties === 'boolean' ? schema.additionalProperties : undefined,
+		$defs: schema.$defs && typeof schema.$defs === 'object' ? schema.$defs as Record<string, any> : undefined,
+	};
+}
+
+function toLmStudioRawTools(tools: readonly LanguageModelChatTool[] | undefined, toolMode: LanguageModelChatToolMode): { type: 'none'; } | { type: 'toolArray'; tools: Array<{ type: 'function'; function: { name: string; description?: string; parameters?: ReturnType<typeof toLmStudioToolParameters>; }; }>; force?: boolean; } {
+	if (!tools || tools.length === 0) {
+		return { type: 'none' };
+	}
+
+	return {
+		type: 'toolArray',
+		tools: tools.map(tool => ({
+			type: 'function',
+			function: {
+				name: tool.name,
+				description: tool.description,
+				parameters: toLmStudioToolParameters(tool.inputSchema),
+			},
+		})),
+		force: toolMode === LanguageModelChatToolMode.Required ? true : undefined,
+	};
+}
+
+function toLmStudioMessage(message: LanguageModelChatRequestMessage, toolResultTokenLimit = DEFAULT_MAX_TOOL_RESULT_TOKENS):
+	| { role: 'assistant'; content: Array<{ type: 'text'; text: string; } | { type: 'toolCallRequest'; toolCallRequest: { type: 'function'; id?: string; name: string; arguments?: Record<string, any>; }; }>; }
+	| { role: 'user'; content: Array<{ type: 'text'; text: string; }>; }
+	| { role: 'system'; content: Array<{ type: 'text'; text: string; }>; }
+	| { role: 'tool'; content: Array<{ type: 'toolCallResult'; toolCallId?: string; content: string; }>; } {
+	const role = toLmStudioRole(Number(message.role));
+
+	if (role === 'user') {
+		const toolResults = message.content.filter((part): part is LanguageModelToolResultPart => part instanceof LanguageModelToolResultPart);
+		const nonToolParts = message.content.filter(part => !(part instanceof LanguageModelToolResultPart));
+		if (toolResults.length > 0 && nonToolParts.length === 0) {
+			return {
+				role: 'tool',
+				content: toolResults.map(part => ({
+					type: 'toolCallResult' as const,
+					toolCallId: part.callId,
+					content: truncateTextToTokenBudget(part.content.map(item => serializeUnknownPart(item, toolResultTokenLimit)).filter(Boolean).join('\n\n'), toolResultTokenLimit),
+				})),
+			};
+		}
+	}
+
+	if (role === 'assistant') {
+		const content: Array<{ type: 'text'; text: string; } | { type: 'toolCallRequest'; toolCallRequest: { type: 'function'; id?: string; name: string; arguments?: Record<string, any>; }; }> = [];
+
+		for (const part of message.content) {
+			if (part instanceof LanguageModelTextPart) {
+				content.push({ type: 'text' as const, text: part.value });
+				continue;
+			}
+
+			if (part instanceof LanguageModelToolCallPart) {
+				content.push({
+					type: 'toolCallRequest' as const,
+					toolCallRequest: {
+						type: 'function' as const,
+						id: part.callId,
+						name: part.name,
+						arguments: part.input as Record<string, any>,
+					},
+				});
+				continue;
+			}
+
+			const serialized = serializeUnknownPart(part, toolResultTokenLimit);
+			if (serialized) {
+				content.push({ type: 'text' as const, text: serialized });
+			}
+		}
+
+		return {
+			role,
+			content,
+		};
+	}
+
+	const baseContent = message.content.map(part => serializeUnknownPart(part, toolResultTokenLimit)).filter(Boolean).join('\n\n');
+	const content = role === 'user'
+		? prioritizeExplicitUserRequest(baseContent)
+		: baseContent;
+
+	return {
+		role,
+		content: content ? [{ type: 'text' as const, text: content }] : [],
+	};
+}
+
 export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private client: LMStudioClient | null = null;
 	private lastBaseUrl: string | null = null;
@@ -110,6 +258,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private cacheTimestamp = 0;
 	private readonly CACHE_DURATION = 30000; // 30 seconds
 	private output: OutputChannel;
+	private readonly statusBar: StatusBarItem;
 	private verbose = false;
 
 	// Must match the property name expected by LanguageModelChatProvider interface
@@ -117,6 +266,9 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 	constructor() {
 		this.output = window.createOutputChannel('LM Studio');
+		this.statusBar = window.createStatusBarItem('lmstudio.progress', StatusBarAlignment.Left, 100);
+		this.statusBar.name = 'LM Studio Progress';
+		this.statusBar.hide();
 		this.loadVerbosity();
 		// Listen for configuration changes to refresh the client
 		workspace.onDidChangeConfiguration((e: ConfigurationChangeEvent) => {
@@ -157,6 +309,15 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			this.output.appendLine(`[${new Date().toISOString()}] ERROR ${msg}: ${detail}`);
 		}
 		console.error(`LM Studio: ${msg}`, err);
+	}
+
+	private showProgressStatus(text: string): void {
+		this.statusBar.text = `$(sync~spin) ${text}`;
+		this.statusBar.show();
+	}
+
+	private hideProgressStatus(): void {
+		this.statusBar.hide();
 	}
 
 	private syncCachedModelMetadata(modelId: string, maxInputTokens: number): void {
@@ -422,17 +583,15 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 		try {
 		// Convert VS Code messages to LM Studio chat format
-		const chatHistory = messages.map((msg, index) => {
-			const role = toLmStudioRole(Number(msg.role));
-			const baseContent = msg.content.map(part => serializeUnknownPart(part)).filter(Boolean).join('\n\n');
-			const content = role === 'user'
-				? prioritizeExplicitUserRequest(baseContent)
-				: baseContent;
-
-			const convertedMessage = { role, content };
-			this.log(`Message ${index}: role=${msg.role}->${role} parts=${msg.content.length} content=${content.substring(0, 100)}${content.length > 100 ? '...' : ''}`);
+		const maxToolResultTokens = Math.max(1200, Math.min(DEFAULT_MAX_TOOL_RESULT_TOKENS, Math.floor(model.maxInputTokens * 0.08)));
+		const chatHistory = {
+			messages: messages.map((msg, index) => {
+			const convertedMessage = toLmStudioMessage(msg, maxToolResultTokens);
+			const preview = JSON.stringify(convertedMessage).substring(0, 160);
+			this.log(`Message ${index}: role=${msg.role}->${convertedMessage.role} parts=${msg.content.length} payload=${preview}${preview.length >= 160 ? '...' : ''}`);
 			return convertedMessage;
-		});			// Get a model instance - try to get the requested model or use the first available one
+			}),
+		};			// Get a model instance - try to get the requested model or use the first available one
 			let llmModel;
 			try {
 				if (model.id === "no-models-loaded" || model.id === "connection-error" || model.id === "server-not-started") {
@@ -471,14 +630,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				throw new Error(`No models available. Please load a model in LM Studio first. Error: ${loadError}`);
 			}
 
-			// Make the prediction with streaming
-			const predictionOptions = {
-				maxTokens: options.modelOptions?.maxTokens || 8192,
-			};
-			this.log(`Invoking respond() with options ${JSON.stringify(predictionOptions)} historyLength=${chatHistory.length}`);
-			const prediction = llmModel.respond(chatHistory, predictionOptions);
-
-			let index = 0;
+			let receivedToolCalls = 0;
 			let receivedChars = 0;
 			let firstFragmentTime: number | undefined;
 			let skipThinkMode = false;
@@ -486,6 +638,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			let lastReportTime = Date.now();
 			const BATCH_DELAY_MS = 100; // Slightly longer delay for stability
 			let fragmentCount = 0;
+			let lastPromptProgress = -1;
 
 			// Helper function to flush accumulated content
 			const flushContent = () => {
@@ -500,6 +653,53 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 					}
 				}
 			};
+
+			const predictionOptions = {
+				maxTokens: options.modelOptions?.maxTokens || 8192,
+				rawTools: toLmStudioRawTools(options.tools, options.toolMode),
+			};
+			const estimatedPromptTokens = estimateTokenCount(JSON.stringify({ chatHistory, rawTools: predictionOptions.rawTools.type === 'toolArray' ? predictionOptions.rawTools.tools : [] }));
+
+			const predictionCallbacks = {
+				onPromptProcessingProgress: (promptProgress: number) => {
+					const percent = Math.max(0, Math.min(100, Math.round(promptProgress * 100)));
+					if (percent === lastPromptProgress) {
+						return;
+					}
+
+					lastPromptProgress = percent;
+					const processedTokens = Math.min(estimatedPromptTokens, Math.round(estimatedPromptTokens * promptProgress));
+					this.showProgressStatus(`LM Studio prompt ${percent}% (~${processedTokens}/${estimatedPromptTokens} tokens)`);
+				},
+				onFirstToken: () => {
+					this.showProgressStatus('LM Studio generating response');
+				},
+				onToolCallRequestEnd: (_callId: number, info: { toolCallRequest: { type: string; id?: string; name: string; arguments?: Record<string, any>; }; rawContent: string | undefined; }) => {
+					flushContent();
+
+					if (info.toolCallRequest.type !== 'function') {
+						this.log(`Skipping unsupported LM Studio tool call type: ${info.toolCallRequest.type}`);
+						return;
+					}
+
+					const toolCallId = info.toolCallRequest.id ?? `lmstudio-${Date.now()}-${receivedToolCalls}`;
+					receivedToolCalls++;
+					this.log(`Reporting tool call '${info.toolCallRequest.name}' id=${toolCallId}`);
+					progress.report(new LanguageModelToolCallPart(toolCallId, info.toolCallRequest.name, info.toolCallRequest.arguments ?? {}));
+				},
+				onToolCallRequestFailure: (_callId: number, error: Error) => {
+					this.logError('LM Studio tool call generation failed', error);
+				},
+			};
+
+			const responseOptions = {
+				...predictionOptions,
+				...predictionCallbacks,
+			};
+
+			this.log(`Invoking respond() with options ${JSON.stringify({ maxTokens: predictionOptions.maxTokens, hasTools: predictionOptions.rawTools.type === 'toolArray', forceTool: predictionOptions.rawTools.type === 'toolArray' ? !!predictionOptions.rawTools.force : false })} historyLength=${chatHistory.messages.length}`);
+			this.log(`Estimated prompt tokens before send: ~${estimatedPromptTokens}`);
+			const prediction = llmModel.respond(chatHistory, responseOptions);
 
 			// Stream the response
 			for await (const fragment of prediction) {
@@ -569,10 +769,13 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 			// Always flush any remaining content at the end
 			flushContent();
+			await prediction;
 			const ended = Date.now();
-			this.log(`Streaming complete fragments=${index} chars=${receivedChars} duration=${ended-started}ms firstFragmentLatency=${firstFragmentTime?firstFragmentTime-started:'n/a'}ms`);
+			this.log(`Streaming complete fragments=${fragmentCount} chars=${receivedChars} toolCalls=${receivedToolCalls} duration=${ended-started}ms firstFragmentLatency=${firstFragmentTime?firstFragmentTime-started:'n/a'}ms`);
+			this.hideProgressStatus();
 
 		} catch (error) {
+			this.hideProgressStatus();
 			let errorMessage = 'Unknown error occurred';
 
 			if (error instanceof Error) {
