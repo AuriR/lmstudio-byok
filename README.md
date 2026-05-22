@@ -8,7 +8,8 @@ This VS Code extension provides access to local LLM models running in LM Studio 
 - 🚀 **High Performance**: Direct integration with LM Studio for optimal performance
 - 🔄 **Streaming Responses**: Real-time response streaming
 - 🛠️ **Tool Calling**: Function calling support (if supported by the model)
-- 🔌 **Easy Setup**: Minimal configuration required
+- �️ **Vision Support**: Automatic detection of vision-capable models (LLaVA, Qwen-VL, etc.)
+- �🔌 **Easy Setup**: Minimal configuration required
 - 🏷️ **Model Variety**: Support for Llama, Qwen, CodeGemma, Phi, and other popular models
 
 ## Prerequisites

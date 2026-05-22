@@ -5,7 +5,7 @@ import { CancellationToken, LanguageModelChatMessageRole, LanguageModelChatTool,
 import { LMStudioClient } from '@lmstudio/sdk';
 import { encode } from 'gpt-tokenizer';
 
-function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxOutputTokens: number, supportsTools = true): LanguageModelChatInformation {
+function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxOutputTokens: number, supportsTools = true, supportsImageInput = false): LanguageModelChatInformation {
 	return {
 		id,
 		// Prefix the display name with BYOK to avoid confusion
@@ -19,7 +19,7 @@ function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxO
 		isUserSelectable: true,
 		capabilities: {
 			toolCalling: supportsTools,
-			imageInput: false, // LM Studio models vary, but default to false for safety
+			imageInput: supportsImageInput, // Dynamically determined based on model identifier
 		}
 	};
 }
@@ -566,9 +566,20 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				// Assume tool calling support for loaded models (can be refined later)
 				const supportsTools = true;
 
-				this.log(`Adding loaded model ${id} - Context: ${maxInputTokens}`);
+				// Detect if model supports image input based on model identifier
+				// Common vision model patterns in LM Studio
+				const supportsImageInput = id.includes('vision') || 
+										  id.includes('gemma') || 
+										  id.includes('llava') || 
+										  id.includes('phi') || 
+										  id.includes('qwen') ||
+										  id.includes('llama') || // Some Llama models support vision
+										  id.includes('cogvlm') || // CogVLM models support vision
+										  id.includes('minicpm');   // MiniCPM models support vision
 
-				models.push(getChatModelInfo(id, name, maxInputTokens, maxOutputTokens, supportsTools));
+				this.log(`Adding loaded model ${id} - Context: ${maxInputTokens}, Image Input: ${supportsImageInput}`);
+
+				models.push(getChatModelInfo(id, name, maxInputTokens, maxOutputTokens, supportsTools, supportsImageInput));
 			}
 
 			// If we found loaded models, return them, otherwise provide helpful guidance
