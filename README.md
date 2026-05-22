@@ -72,6 +72,10 @@ Once configured, you can use LM Studio models in:
 
 - `lmstudio.baseUrl`: Base URL for LM Studio server (default: "http://localhost:1234")
 - `lmstudio.apiKey`: API key for authentication (optional for local instances)
+- `lmstudio.verboseLogging`: Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting (default: false)
+- `lmstudio.verboseProgressReporting`: Show detailed LM Studio prompt/generation progress in the status bar and output channel (default: false)
+- `lmstudio.playTokenThresholdSound`: Play a short cash-register style completion sound when a request exceeds the configured token threshold (default: false)
+- `lmstudio.tokenSoundThreshold`: Approximate total token count required before the completion sound plays (default: 10000)
 
 ### Environment Variables
 
@@ -145,4 +149,4 @@ This extension uses the [LM Studio SDK](https://github.com/lmstudio-ai/lmstudio-
 
 ## License
 
-This extension follows the same license as the parent repository.
+This extension is licensed under the terms described in the [LICENSE.md](./LICENSE.md) file, which was originally developed by Pierce Boggan (@pierceboggan) at Microsoft and subsequently updated to use the latest LM Studio API by Auri Rahimzadeh. The license includes specific provisions regarding AI accountability and indemnification.

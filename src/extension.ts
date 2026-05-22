@@ -200,14 +200,34 @@ function getWelcomeContent(): string {
         <div class="settings-code">{
   "lmstudio.baseUrl": "http://localhost:1234",
   "lmstudio.apiKey": "your-api-key-here",
-  "lmstudio.verboseLogging": false
+  "lmstudio.verboseLogging": false,
+  "lmstudio.verboseProgressReporting": false,
+  "lmstudio.playTokenThresholdSound": false,
+  "lmstudio.tokenSoundThreshold": 10000
 }</div>
 
         <div class="warning">
             <strong>Note:</strong> API key is optional for local instances. Only needed if you're connecting to a remote LM Studio server.
         </div>
 
-        <h2>🐛 Troubleshooting</h2>
+        <h2>� New Features</h2>
+        
+        <div class="step">
+            <div class="step-number">Verbose Logging</div>
+            <p>Enable detailed diagnostic logging by setting <code>"lmstudio.verboseLogging": true</code> to help troubleshoot connection issues or understand what's happening during model inference.</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Cha-Ching Sound</div>
+            <p>Enable a cash-register style sound notification when responses exceed the token threshold by setting <code>"lmstudio.playTokenThresholdSound": true</code>. This feature plays a sound when a response exceeds the configured token count (default 10,000 tokens).</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Progress Reporting</div>
+            <p>Enable detailed progress reporting in the status bar and output channel by setting <code>"lmstudio.verboseProgressReporting": true</code> to see real-time feedback about prompt/generation progress.</p>
+        </div>
+
+        <h2>�🐛 Troubleshooting</h2>
 
         <div class="step">
             <div class="step-number">Enable Diagnostic Logging</div>
