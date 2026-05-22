@@ -568,14 +568,27 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 				// Detect if model supports image input based on model identifier
 				// Common vision model patterns in LM Studio
-				const supportsImageInput = id.includes('vision') || 
-										  id.includes('gemma') || 
-										  id.includes('llava') || 
-										  id.includes('phi') || 
-										  id.includes('qwen') ||
-										  id.includes('llama') || // Some Llama models support vision
-										  id.includes('cogvlm') || // CogVLM models support vision
-										  id.includes('minicpm');   // MiniCPM models support vision
+				let supportsImageInput = false;
+				
+				// Check for known vision-capable models by pattern matching
+				if (id.includes('vision') || 
+					id.includes('llava') || 
+					id.includes('qwen') ||
+					id.includes('gemma') ||
+					id.includes('phi') ||
+					id.includes('cogvlm') ||
+					id.includes('minicpm') ||
+					id.includes('llama') ||
+					id.includes('pixtral') ||
+					id.includes('deepseek') ||
+					id.includes('nous-hermes')) {
+					supportsImageInput = true;
+				}
+				
+				// Additional heuristic: if model name contains "image" or "vision" patterns, it's likely vision-capable
+				if (id.toLowerCase().includes('image') || id.toLowerCase().includes('vision')) {
+					supportsImageInput = true;
+				}
 
 				this.log(`Adding loaded model ${id} - Context: ${maxInputTokens}, Image Input: ${supportsImageInput}`);
 
