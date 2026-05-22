@@ -396,7 +396,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 		try {
 			const escapedPath = this.chaChingSoundPath.replace(/'/g, "''");
-			const command = `$player = New-Object System.Media.SoundPlayer '${escapedPath}'; $player.PlaySync()`;
+			const command = `$player = New-Object System.Media.SoundPlayer '${escapedPath}'; $player.Load(); Start-Sleep -Seconds 1; $player.Play(); Start-Sleep -Seconds 1`;
 			// Use spawn with proper options to ensure the sound plays correctly
 			const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], {
 				stdio: 'ignore',
