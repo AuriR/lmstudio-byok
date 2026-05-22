@@ -28,6 +28,7 @@ Key features include:
 - Complete message part serialization (text, data, tools)
 - Automatic metadata refresh when context length changes
 - User request prioritization for local models
+- Vision support detection for image-capable models
 
 ## Patterns and Technologies Used
 - **Language**: TypeScript (ES2022 target)

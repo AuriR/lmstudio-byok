@@ -28,6 +28,9 @@ These instructions guide the AI agent on coding style, design philosophy, and be
 2.  **Backward Compatibility:** All new features must maintain backward compatibility with existing functionality.
 3.  **Configuration-Driven:** Features should respect user configuration settings (like verbose mode) to avoid breaking existing workflows.
 
+## 📚 Knowledge Base and Implementation Details
+1.  **Vision Support Detection**: The LM Studio BYOK extension now implements dynamic detection of vision support capabilities for models using pattern matching on model identifiers, since the LM Studio SDK does not directly expose this information. Models with "vision", "llava", "qwen", "gemma", "phi", "cogvlm", "minicpm", "pixtral", "deepseek", or "nous-hermes" in their names are flagged as supporting image input. This resolves the issue where VS Code was incorrectly reporting Gemma 4 as not supporting images despite LM Studio UI showing it does support vision.
+
 ## 📁 File Structure and Organization
 1.  **Consistent Patterns:** Follow established patterns in the codebase for organizing files and implementing features.
 2.  **Modular Design:** Keep features modular and well-separated to facilitate maintenance and future enhancements.
