@@ -1,3 +1,6 @@
+import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { CancellationToken, LanguageModelChatMessageRole, LanguageModelChatTool, LanguageModelChatToolMode, LanguageModelTextPart, LanguageModelToolCallPart, LanguageModelToolResultPart, LanguageModelDataPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, StatusBarAlignment, StatusBarItem, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
 import { LMStudioClient } from '@lmstudio/sdk';
 import { encode } from 'gpt-tokenizer';
@@ -259,22 +262,33 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private readonly CACHE_DURATION = 30000; // 30 seconds
 	private output: OutputChannel;
 	private readonly statusBar: StatusBarItem;
+	private statusBarHideTimer: NodeJS.Timeout | undefined;
+	private readonly chaChingSoundPath: string;
 	private verbose = false;
+	private verboseProgress = false;
+	private playTokenThresholdSound = false;
+	private tokenSoundThreshold = 10000;
 
 	// Must match the property name expected by LanguageModelChatProvider interface
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
 
-	constructor() {
+	constructor(extensionPath: string) {
 		this.output = window.createOutputChannel('LM Studio');
 		this.statusBar = window.createStatusBarItem('lmstudio.progress', StatusBarAlignment.Left, 100);
 		this.statusBar.name = 'LM Studio Progress';
 		this.statusBar.hide();
-		this.loadVerbosity();
+		this.chaChingSoundPath = path.join(extensionPath, 'cha-ching.wav');
+		this.loadSettings();
 		// Listen for configuration changes to refresh the client
 		workspace.onDidChangeConfiguration((e: ConfigurationChangeEvent) => {
-			if (e.affectsConfiguration('lmstudio.baseUrl') || e.affectsConfiguration('lmstudio.apiKey') || e.affectsConfiguration('lmstudio.verboseLogging')) {
+			if (e.affectsConfiguration('lmstudio.baseUrl') ||
+				e.affectsConfiguration('lmstudio.apiKey') ||
+				e.affectsConfiguration('lmstudio.verboseLogging') ||
+				e.affectsConfiguration('lmstudio.verboseProgressReporting') ||
+				e.affectsConfiguration('lmstudio.playTokenThresholdSound') ||
+				e.affectsConfiguration('lmstudio.tokenSoundThreshold')) {
 				this.log('Configuration changed, will refresh client on next request');
-				this.loadVerbosity();
+				this.loadSettings();
 				// Reset the client so it gets recreated with new settings
 				this.client = null;
 				this.lastBaseUrl = null;
@@ -287,12 +301,18 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		});
 	}
 
-	private loadVerbosity() {
+	private loadSettings() {
 		try {
 			const config = workspace.getConfiguration('lmstudio');
 			this.verbose = !!config.get<boolean>('verboseLogging');
+			this.verboseProgress = !!config.get<boolean>('verboseProgressReporting');
+			this.playTokenThresholdSound = !!config.get<boolean>('playTokenThresholdSound');
+			this.tokenSoundThreshold = Math.max(1, config.get<number>('tokenSoundThreshold', 10000));
 		} catch {
 			this.verbose = false;
+			this.verboseProgress = false;
+			this.playTokenThresholdSound = false;
+			this.tokenSoundThreshold = 10000;
 		}
 	}
 
@@ -312,12 +332,79 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	}
 
 	private showProgressStatus(text: string): void {
+		if (!this.verboseProgress) {
+			return;
+		}
+
+		if (this.statusBarHideTimer) {
+			clearTimeout(this.statusBarHideTimer);
+			this.statusBarHideTimer = undefined;
+		}
 		this.statusBar.text = `$(sync~spin) ${text}`;
 		this.statusBar.show();
 	}
 
+	private showCompletedStatus(text: string, hideAfterMs = 8000): void {
+		if (!this.verboseProgress) {
+			return;
+		}
+
+		if (this.statusBarHideTimer) {
+			clearTimeout(this.statusBarHideTimer);
+		}
+
+		this.statusBar.text = `$(check) ${text}`;
+		this.statusBar.show();
+		this.statusBarHideTimer = setTimeout(() => {
+			this.statusBar.hide();
+			this.statusBarHideTimer = undefined;
+		}, hideAfterMs);
+	}
+
 	private hideProgressStatus(): void {
+		if (!this.verboseProgress) {
+			return;
+		}
+
+		if (this.statusBarHideTimer) {
+			clearTimeout(this.statusBarHideTimer);
+			this.statusBarHideTimer = undefined;
+		}
 		this.statusBar.hide();
+	}
+
+	private maybeLogProgress(msg: string): void {
+		if (this.verboseProgress) {
+			this.output.appendLine(`[${new Date().toISOString()}] PROGRESS ${msg}`);
+		}
+	}
+
+	private playChaChingSound(): void {
+		if (!this.playTokenThresholdSound) {
+			return;
+		}
+
+		if (process.platform !== 'win32') {
+			this.log('Token threshold sound is only implemented on Windows in this extension build');
+			return;
+		}
+
+		if (!fs.existsSync(this.chaChingSoundPath)) {
+			this.log(`Token threshold sound file not found: ${this.chaChingSoundPath}`);
+			return;
+		}
+
+		try {
+			const escapedPath = this.chaChingSoundPath.replace(/'/g, "''");
+			const command = `$player = New-Object System.Media.SoundPlayer '${escapedPath}'; $player.PlaySync()`;
+			const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], {
+				detached: true,
+				stdio: 'ignore',
+			});
+			child.unref();
+		} catch (error) {
+			this.logError('Failed to play token threshold sound', error);
+		}
 	}
 
 	private syncCachedModelMetadata(modelId: string, maxInputTokens: number): void {
@@ -582,6 +669,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		}
 
 		try {
+		this.showProgressStatus('LM Studio preparing prompt');
 		// Convert VS Code messages to LM Studio chat format
 		const maxToolResultTokens = Math.max(1200, Math.min(DEFAULT_MAX_TOOL_RESULT_TOKENS, Math.floor(model.maxInputTokens * 0.08)));
 		const chatHistory = {
@@ -639,6 +727,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			const BATCH_DELAY_MS = 100; // Slightly longer delay for stability
 			let fragmentCount = 0;
 			let lastPromptProgress = -1;
+			let generatedTokens = 0;
 
 			// Helper function to flush accumulated content
 			const flushContent = () => {
@@ -669,9 +758,11 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 					lastPromptProgress = percent;
 					const processedTokens = Math.min(estimatedPromptTokens, Math.round(estimatedPromptTokens * promptProgress));
+					this.maybeLogProgress(`prompt ${percent}% (~${processedTokens}/${estimatedPromptTokens} tokens)`);
 					this.showProgressStatus(`LM Studio prompt ${percent}% (~${processedTokens}/${estimatedPromptTokens} tokens)`);
 				},
 				onFirstToken: () => {
+					this.maybeLogProgress('generation started');
 					this.showProgressStatus('LM Studio generating response');
 				},
 				onToolCallRequestEnd: (_callId: number, info: { toolCallRequest: { type: string; id?: string; name: string; arguments?: Record<string, any>; }; rawContent: string | undefined; }) => {
@@ -707,6 +798,8 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 					this.log('Cancellation requested by VS Code token');
 					break;
 				}
+
+				generatedTokens += Math.max(0, fragment.tokensCount || 0);
 
 				if (fragment.content) {
 					if (firstFragmentTime === undefined) {
@@ -772,7 +865,15 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			await prediction;
 			const ended = Date.now();
 			this.log(`Streaming complete fragments=${fragmentCount} chars=${receivedChars} toolCalls=${receivedToolCalls} duration=${ended-started}ms firstFragmentLatency=${firstFragmentTime?firstFragmentTime-started:'n/a'}ms`);
-			this.hideProgressStatus();
+			const totalTokens = estimatedPromptTokens + generatedTokens;
+			const finalSummary = `LM Studio done: ~${estimatedPromptTokens} prompt tok, ~${generatedTokens} gen tok, ~${totalTokens} total tok, ${Math.round((ended - started) / 1000)}s`;
+			this.log(finalSummary);
+			this.maybeLogProgress(finalSummary);
+			if (totalTokens > this.tokenSoundThreshold) {
+				this.log(`Token threshold exceeded (~${totalTokens} > ${this.tokenSoundThreshold}); playing completion sound`);
+				this.playChaChingSound();
+			}
+			this.showCompletedStatus(finalSummary);
 
 		} catch (error) {
 			this.hideProgressStatus();

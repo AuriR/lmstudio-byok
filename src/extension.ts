@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { LMStudioChatModelProvider } from './provider';
 
 export function activate(context: vscode.ExtensionContext) {
-	const provider = new LMStudioChatModelProvider();
+    const provider = new LMStudioChatModelProvider(context.extensionPath);
 
 	// Register the chat model provider
 	const disposable = vscode.lm.registerLanguageModelChatProvider('lmstudio', provider);
