@@ -3,7 +3,7 @@
 	"enabledApiProposals": [
 		"chatProvider"
 	],
-	"publisher": "aurisideas",
+	"publisher": "AuriRahimzadeh",
 	"displayName": "LM Studio BYOK Chat Provider (Auri Update)",
 	"description": "Bring your own LM Studio instance to use local LLM models in GitHub Copilot Chat. Updated to use the latest LM Studio API and such by Auri Rahimzadeh, based on an older extension by Pierce Boggan. This extension connects to your LM Studio server to provide language model responses directly within GitHub Copilot Chat, allowing you to leverage local LLMs for code generation, explanations, and more. Cool logging features enable you to see detailed request/response info and token usage in the 'LM Studio' output channel. You can even play a cheesy sound when you 'spend' a lot of tokens. Configure your LM Studio connection settings in the extension settings to get started.",
 	"repository": {
