@@ -1,6 +1,6 @@
 # LM Studio BYOK Chat Provider License Agreement
 
-This LM Studio BYOK Chat Provider extension ("Extension") is provided under the following terms and conditions. The Extension was originally developed by Pierce Boggan (@pierceboggan) at Microsoft and subsequently updated to use the latest LM Studio API by Auri Rahimzadeh.
+This LM Studio BYOK Chat Provider extension ("Extension") is provided under the following terms and conditions. The Extension was originally developed by Pierce Boggan (@pierceboggan) for an earlier version of VS Code and LM Studio. Subsequently updated with more features and to use the latest LM Studio API by Auri Rahimzadeh (@Auri, auri.net).
 
 ## License Terms
 
@@ -25,7 +25,7 @@ By installing and using this Extension, you agree to the following terms:
 
 ## Copyright Notice
 
-Copyright (c) 2025 Pierce Boggan (@pierceboggan) and Auri Rahimzadeh
+Copyright (c) 2025 Pierce Boggan (@pierceboggan) for original version, and Copyright (c) 2026 Auri Rahimzadeh
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -33,4 +33,4 @@ The above copyright notice and this permission notice shall be included in all c
 
 ## Disclaimer
 
-AI makes mistakes, accept that and be accountable. This software is provided for educational and research purposes only. The developers and contributors are not responsible for any misuse or damage caused by the use of this software.
+AI makes mistakes, accept that and be accountable. This software is provided for entertainment, educational, and research purposes only. The developers and contributors are not responsible for any misuse or damage caused by the use of this software. If you use this and something bad happens, you agree to indemnify, defend, and hold harmless the authors. If something good happens, buy someone a beer, bourbon, coffee, or memory upgrade.
