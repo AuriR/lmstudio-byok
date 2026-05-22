@@ -1,5 +1,5 @@
 {
-	"name": "lmstudio-byok-chat-provider",
+	"name": "lmstudio-byok-chat-provider-auri",
 	"enabledApiProposals": [
 		"chatProvider"
 	],
@@ -10,7 +10,7 @@
 		"type": "git",
 		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.4.1",
+	"version": "0.4.2",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -21,6 +21,17 @@
 	"activationEvents": [
 		"onStartupFinished"
 	],
+	"icon": "images/icon_marketplace.png",
+	"screenshots": [
+		{
+			"description": "Main extension interface showing model selection and connection status",
+			"path": "images/screenshot_1.png"
+		}
+	],
+	"galleryBanner": {
+		"color": "#C4C4C4",
+		"theme": "dark"
+	},
 	"contributes": {
 		"languageModelChatProviders": [
 			{
