@@ -397,10 +397,11 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		try {
 			const escapedPath = this.chaChingSoundPath.replace(/'/g, "''");
 			const command = `$player = New-Object System.Media.SoundPlayer '${escapedPath}'; $player.PlaySync()`;
+			// Use spawn with proper options to ensure the sound plays correctly
 			const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', command], {
-				detached: true,
 				stdio: 'ignore',
 			});
+			// Don't detach the process - let it complete naturally otherwise sound won't play.
 			child.unref();
 		} catch (error) {
 			this.logError('Failed to play token threshold sound', error);
