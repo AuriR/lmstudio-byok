@@ -728,6 +728,11 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			let fragmentCount = 0;
 			let lastPromptProgress = -1;
 			let generatedTokens = 0;
+			let tokenTimestamps: number[] = [];
+			let minTokensPerSecond = Infinity;
+			let maxTokensPerSecond = -Infinity;
+			let totalTokensPerSecond = 0;
+			let tokenCount = 0;
 
 			// Helper function to flush accumulated content
 			const flushContent = () => {
@@ -839,6 +844,27 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 						
 						const now = Date.now();
 						
+						// Track tokens per second for real-time display and statistics
+						if (firstFragmentTime !== undefined && now > firstFragmentTime) {
+							const elapsedSeconds = (now - firstFragmentTime) / 1000;
+							const tokensPerSecond = Math.floor(generatedTokens / elapsedSeconds);
+							
+							// Update statistics for final logging
+							tokenCount++;
+							totalTokensPerSecond += tokensPerSecond;
+							minTokensPerSecond = Math.min(minTokensPerSecond, tokensPerSecond);
+							maxTokensPerSecond = Math.max(maxTokensPerSecond, tokensPerSecond);
+							
+							// Store timestamp for calculating rate
+							tokenTimestamps.push(now);
+							
+							// Show real-time tokens per second when verbose progress is enabled
+							if (this.verboseProgress) {
+								const progressText = `LM Studio generating response (~${tokensPerSecond} t/s)`;
+								this.showProgressStatus(progressText);
+							}
+						}
+						
 						// More conservative flushing strategy
 						const shouldFlush = 
 							// Flush on paragraph breaks (double newlines)
@@ -866,9 +892,26 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			const ended = Date.now();
 			this.log(`Streaming complete fragments=${fragmentCount} chars=${receivedChars} toolCalls=${receivedToolCalls} duration=${ended-started}ms firstFragmentLatency=${firstFragmentTime?firstFragmentTime-started:'n/a'}ms`);
 			const totalTokens = estimatedPromptTokens + generatedTokens;
+			
+			// Calculate final statistics for tokens per second
+			let avgTokensPerSecond = 0;
+			if (tokenCount > 0 && firstFragmentTime !== undefined) {
+				const totalSeconds = (ended - firstFragmentTime) / 1000;
+				avgTokensPerSecond = Math.floor(totalTokens / totalSeconds);
+			}
+			
 			const finalSummary = `LM Studio done: ~${estimatedPromptTokens} prompt tok, ~${generatedTokens} gen tok, ~${totalTokens} total tok, ${Math.round((ended - started) / 1000)}s`;
 			this.log(finalSummary);
-			this.maybeLogProgress(finalSummary);
+			
+			// Log token statistics if we have data
+			if (tokenCount > 0 && firstFragmentTime !== undefined) {
+				const stats = `Tokens/second stats: avg=${avgTokensPerSecond}, min=${minTokensPerSecond === Infinity ? 0 : minTokensPerSecond}, max=${maxTokensPerSecond === -Infinity ? 0 : maxTokensPerSecond}`;
+				this.log(stats);
+				this.maybeLogProgress(`${finalSummary} | ${stats}`);
+			} else {
+				this.maybeLogProgress(finalSummary);
+			}
+			
 			if (totalTokens > this.tokenSoundThreshold) {
 				this.log(`Token threshold exceeded (~${totalTokens} > ${this.tokenSoundThreshold}); playing completion sound`);
 				this.playChaChingSound();
