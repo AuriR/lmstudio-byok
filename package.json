@@ -3,14 +3,14 @@
 	"enabledApiProposals": [
 		"chatProvider"
 	],
-	"publisher": "pierceboggan",
-	"displayName": "LM Studio BYOK Chat Provider",
-	"description": "Bring your own LM Studio instance to use local LLM models in GitHub Copilot Chat.",
+	"publisher": "aurisideas",
+	"displayName": "LM Studio BYOK Chat Provider (Auri)",
+	"description": "Bring your own LM Studio instance to use local LLM models in GitHub Copilot Chat. Originally developed by Pierce Boggan (@pierceboggan) at Microsoft. Updated to use the latest LM Studio API and such by Auri Rahimzadeh.  This extension connects to your LM Studio server to provide language model responses directly within GitHub Copilot Chat, allowing you to leverage local LLMs for code generation, explanations, and more.",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/pierceboggan/fireworks-byok"
 	},
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -62,6 +62,25 @@
 					"type": "boolean",
 					"default": false,
 					"description": "Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting.",
+					"scope": "application"
+				},
+				"lmstudio.verboseProgressReporting": {
+					"type": "boolean",
+					"default": false,
+					"description": "Show detailed LM Studio prompt/generation progress in the status bar and output channel.",
+					"scope": "application"
+				},
+				"lmstudio.playTokenThresholdSound": {
+					"type": "boolean",
+					"default": false,
+					"description": "Play a short cash-register style completion sound when a request exceeds the configured token threshold. Currently implemented for Windows.",
+					"scope": "application"
+				},
+				"lmstudio.tokenSoundThreshold": {
+					"type": "number",
+					"default": 10000,
+					"minimum": 1,
+					"description": "Approximate total token count required before the completion sound plays.",
 					"scope": "application"
 				}
 			}
