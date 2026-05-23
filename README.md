@@ -11,6 +11,7 @@ This VS Code extension provides access to local LLM models running in LM Studio,
 - �️ **Vision Support**: Automatic detection of vision-capable models (LLaVA, Qwen-VL, etc.)
 - �🔌 **Easy Setup**: Minimal configuration required
 - 🏷️ **Model Variety**: Support for Llama, Qwen, CodeGemma, Phi, and other popular models
+- 🧠 **Performance Tuning**: Advanced optimizations including token budgeting, caveman prompts, and more
 
 ## Prerequisites
 
@@ -19,7 +20,7 @@ This VS Code extension provides access to local LLM models running in LM Studio,
 
 ## Setup for VS Code Users
 
-Refer to the **Welcome** window. You can reach this at any time by pressing **Ctrl-Shift-P**, then choosing **LM Studio: Show Welcome**
+Refer to the **Documentation** window. You can reach this at any time by pressing **Ctrl-Shift-P**, then choosing **LM Studio: Show Documentation**
 
 ## Usage
 
@@ -33,14 +34,38 @@ Once configured, you can use LM Studio models in:
 
 Press Ctrl-, for VS Code preferences and select LM Studio to update these easily.
 
-- `lmstudio.baseUrl`: Base URL for LM Studio server (default: "http://localhost:1234")
+### Core Settings
+
+- `lmstudio.baseUrl`: Base URL for LM Studio server (default: "<http://localhost:1234>")
 - `lmstudio.apiKey`: API key for authentication (optional for local instances)
 - `lmstudio.verboseLogging`: Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting (default: false)
 - `lmstudio.verboseProgressReporting`: Show detailed LM Studio prompt/generation progress in the status bar, token usage, and output channel (default: false) - Fun to watch 💰🪙 **Tokenmaxxing!** 🪙💰
 - `lmstudio.playTokenThresholdSound`: Play a short cash-register style completion sound when a request exceeds the configured token threshold (default: false)
 - `lmstudio.tokenSoundThreshold`: Approximate total token count required before the completion sound plays (default: 10000)
 
-**Where can I see prompt progress bar and token count?**: Bottom left of editor window, not in the chat window. 
+### Performance Tuning Settings
+- `lmstudio.autoCavemanPrompts`: Prepends a system instruction that asks the model to be concise and preserve essentials. This is a lightweight behavior hint, not a true prompt compaction pass. (default: false)
+- `lmstudio.performanceOptimizations`: Master gate for implemented performance features. When false, feature-specific settings such as caveman prompts and token budgeting are ignored. (default: true)
+- `lmstudio.tokenBudgeting`: Estimates prompt plus tool token usage before send, shortens older context when needed, and logs a warning when the request approaches the model context window. (default: false)
+- `lmstudio.contextOverflowPolicy`: Dropdown that chooses how LM Studio should handle any overflow that remains after provider-side trimming: `stopAtLimit`, `truncateMiddle`, or `rollingWindow`. (default: `truncateMiddle`)
+- `lmstudio.blockOversizedRequests`: Blocks requests locally when they still exceed the estimated prompt budget after trimming. Disable this to let LM Studio attempt the request anyway, even if it may fail. (default: true)
+- `lmstudio.toggleAllPerformance`: Turns on all currently implemented performance features at once for quick testing. (default: false)
+
+**Where can I see prompt progress bar and token count?**: Bottom left of editor window, not in the chat window.
+
+## Performance Tuning
+
+This extension provides a small set of implemented performance tuning features to help manage context windows when working with local LLMs. Feature-specific settings are off by default, while `lmstudio.performanceOptimizations` acts as the master gate and defaults to on.
+
+### Key Performance Features:
+
+1. **Auto-Caveman Prompts** - Adds a concision instruction to the request so the model is nudged toward shorter, denser output
+2. **Token Budgeting** - Estimates request size before send, drops or truncates older history when needed, and notifies the user in chat when context is shortened
+3. **Context Overflow Policy** - Lets LM Studio apply `stopAtLimit`, `truncateMiddle`, or `rollingWindow` behavior if a request still exceeds the effective budget after provider-side trimming
+4. **Oversized Request Blocking** - Prevents obviously too-large prompts from being sent to LM Studio by default, while allowing advanced users to disable the block and continue anyway
+5. **Toggle All Performance** - Enables the currently implemented performance features at once for convenient testing
+
+When enabled alongside verbose logging, these features emit request-time diagnostics in the `LM Studio` output channel so you can confirm they were applied.
 
 ---
 
@@ -112,7 +137,7 @@ Download and install LM Studio from [lmstudio.ai](https://lmstudio.ai/)
 ### 3. Start the LM Studio Server
 
 1. In LM Studio, go to the "Local Server" tab
-2. Click "Start Server" (default: http://localhost:1234)
+2. Click "Start Server" (default: <http://localhost:1234>)
 3. Note the server URL if you changed the default port
 
 ### 4. Configure VS Code Settings

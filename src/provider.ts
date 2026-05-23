@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { CancellationToken, LanguageModelChatMessageRole, LanguageModelChatTool, LanguageModelChatToolMode, LanguageModelTextPart, LanguageModelToolCallPart, LanguageModelToolResultPart, LanguageModelDataPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, StatusBarAlignment, StatusBarItem, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
@@ -28,6 +29,11 @@ const textDecoder = new TextDecoder();
 
 const userRequestPattern = /<userRequest>([\s\S]*?)<\/userRequest>/i;
 const DEFAULT_MAX_TOOL_RESULT_TOKENS = 8000;
+const DEFAULT_CONTEXT_OVERFLOW_POLICY = 'truncateMiddle';
+const CONTEXT_BUDGET_RECENT_MESSAGE_COUNT = 4;
+const MIN_MESSAGE_TEXT_BUDGET_TOKENS = 128;
+
+type ContextOverflowPolicy = 'stopAtLimit' | 'truncateMiddle' | 'rollingWindow';
 
 function estimateTokenCount(text: string): number {
 	try {
@@ -35,6 +41,10 @@ function estimateTokenCount(text: string): number {
 	} catch {
 		return Math.ceil(text.length / 4);
 	}
+}
+
+function hashPayload(value: unknown): string {
+	return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 12);
 }
 
 function truncateTextToTokenBudget(text: string, maxTokens: number): string {
@@ -58,6 +68,14 @@ function truncateTextToTokenBudget(text: string, maxTokens: number): string {
 		'',
 		text.slice(-tailChars),
 	].join('\n');
+}
+
+function normalizeContextOverflowPolicy(value: unknown): ContextOverflowPolicy {
+	if (value === 'stopAtLimit' || value === 'truncateMiddle' || value === 'rollingWindow') {
+		return value;
+	}
+
+	return DEFAULT_CONTEXT_OVERFLOW_POLICY;
 }
 
 function serializeUnknownPart(part: unknown, toolResultTokenLimit?: number): string {
@@ -252,6 +270,156 @@ function toLmStudioMessage(message: LanguageModelChatRequestMessage, toolResultT
 	};
 }
 
+type LmStudioMessage = ReturnType<typeof toLmStudioMessage>;
+type LmStudioChatHistory = { messages: LmStudioMessage[]; };
+
+function estimateChatHistoryTokens(chatHistory: LmStudioChatHistory, rawTools: ReturnType<typeof toLmStudioRawTools>): number {
+	return estimateTokenCount(JSON.stringify({
+		chatHistory,
+		rawTools: rawTools.type === 'toolArray' ? rawTools.tools : [],
+	}));
+}
+
+function isTextOnlyLmStudioMessage(message: LmStudioMessage): boolean {
+	return message.content.every(part => part.type === 'text');
+}
+
+function getLmStudioMessageText(message: LmStudioMessage): string | undefined {
+	if (!isTextOnlyLmStudioMessage(message)) {
+		return undefined;
+	}
+
+	return message.content
+		.map(part => part.type === 'text' ? part.text : '')
+		.filter(Boolean)
+		.join('\n\n');
+}
+
+function truncateLmStudioMessageText(message: LmStudioMessage, maxTokens: number): LmStudioMessage {
+	const text = getLmStudioMessageText(message);
+	if (!text) {
+		return message;
+	}
+
+	const truncatedText = truncateTextToTokenBudget(text, maxTokens);
+	return {
+		...message,
+		content: truncatedText ? [{ type: 'text', text: truncatedText }] : [],
+	} as LmStudioMessage;
+}
+
+function enforceHistoryTokenBudget(
+	chatHistory: LmStudioChatHistory,
+	rawTools: ReturnType<typeof toLmStudioRawTools>,
+	maxPromptTokens: number,
+): {
+	chatHistory: LmStudioChatHistory;
+	originalTokens: number;
+	finalTokens: number;
+	droppedMessageCount: number;
+	truncatedMessageCount: number;
+	wasShortened: boolean;
+	fitsWithinBudget: boolean;
+} {
+	const originalTokens = estimateChatHistoryTokens(chatHistory, rawTools);
+	if (originalTokens <= maxPromptTokens) {
+		return {
+			chatHistory,
+			originalTokens,
+			finalTokens: originalTokens,
+			droppedMessageCount: 0,
+			truncatedMessageCount: 0,
+			wasShortened: false,
+			fitsWithinBudget: true,
+		};
+	}
+
+	const entries = chatHistory.messages.map((message, index) => ({
+		originalIndex: index,
+		message,
+		locked: message.role === 'system',
+	}));
+
+	let lockedRecentCount = 0;
+	for (let index = entries.length - 1; index >= 0 && lockedRecentCount < CONTEXT_BUDGET_RECENT_MESSAGE_COUNT; index--) {
+		if (entries[index].message.role === 'system') {
+			continue;
+		}
+
+		entries[index].locked = true;
+		lockedRecentCount++;
+	}
+
+	const getCurrentHistory = (): LmStudioChatHistory => ({ messages: entries.map(entry => entry.message) });
+	const calculateCurrentTokens = () => estimateChatHistoryTokens(getCurrentHistory(), rawTools);
+
+	let currentTokens = calculateCurrentTokens();
+	let droppedMessageCount = 0;
+	let truncatedMessageCount = 0;
+
+	while (currentTokens > maxPromptTokens) {
+		const removableIndex = entries.findIndex(entry => !entry.locked);
+		if (removableIndex >= 0) {
+			entries.splice(removableIndex, 1);
+			droppedMessageCount++;
+			currentTokens = calculateCurrentTokens();
+			continue;
+		}
+
+		const truncatableIndex = (() => {
+			for (let index = 0; index < entries.length - 1; index++) {
+				if (entries[index].message.role !== 'system' && isTextOnlyLmStudioMessage(entries[index].message)) {
+					return index;
+				}
+			}
+
+			const lastIndex = entries.length - 1;
+			if (lastIndex >= 0 && isTextOnlyLmStudioMessage(entries[lastIndex].message)) {
+				return lastIndex;
+			}
+
+			for (let index = 0; index < entries.length; index++) {
+				if (entries[index].message.role === 'system' && isTextOnlyLmStudioMessage(entries[index].message)) {
+					return index;
+				}
+			}
+
+			return -1;
+		})();
+
+		if (truncatableIndex < 0) {
+			break;
+		}
+
+		const currentText = getLmStudioMessageText(entries[truncatableIndex].message);
+		if (!currentText) {
+			break;
+		}
+
+		const overage = currentTokens - maxPromptTokens;
+		const currentTextTokens = estimateTokenCount(currentText);
+		const targetTextTokens = Math.max(MIN_MESSAGE_TEXT_BUDGET_TOKENS, currentTextTokens - overage - 32);
+		const truncatedMessage = truncateLmStudioMessageText(entries[truncatableIndex].message, targetTextTokens);
+		if (JSON.stringify(truncatedMessage) === JSON.stringify(entries[truncatableIndex].message)) {
+			break;
+		}
+
+		entries[truncatableIndex].message = truncatedMessage;
+		truncatedMessageCount++;
+		currentTokens = calculateCurrentTokens();
+	}
+
+	return {
+		chatHistory: getCurrentHistory(),
+		originalTokens,
+		finalTokens: currentTokens,
+		droppedMessageCount,
+		truncatedMessageCount,
+		wasShortened: droppedMessageCount > 0 || truncatedMessageCount > 0,
+		fitsWithinBudget: currentTokens <= maxPromptTokens,
+	};
+}
+
 export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private client: LMStudioClient | null = null;
 	private lastBaseUrl: string | null = null;
@@ -268,6 +436,21 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private verboseProgress = false;
 	private playTokenThresholdSound = false;
 	private tokenSoundThreshold = 10000;
+	private autoCavemanPrompts = false;
+	private performanceOptimizations = true;
+	private toggleAllPerformance = false;
+	private tokenBudgeting = false;
+	private contextOverflowPolicy: ContextOverflowPolicy = DEFAULT_CONTEXT_OVERFLOW_POLICY;
+	private blockOversizedRequests = true;
+	private cacheHits = 0;
+	private cacheMisses = 0;
+	private readonly requestSignatureCounts = new Map<string, number>();
+	private readonly responseSignatureCounts = new Map<string, number>();
+	private requestReuseHits = 0;
+	private requestReuseMisses = 0;
+	private responseReuseHits = 0;
+	private responseReuseMisses = 0;
+	private readonly MAX_SIGNATURE_HISTORY = 100;
 
 	// Must match the property name expected by LanguageModelChatProvider interface
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
@@ -286,7 +469,13 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				e.affectsConfiguration('lmstudio.verboseLogging') ||
 				e.affectsConfiguration('lmstudio.verboseProgressReporting') ||
 				e.affectsConfiguration('lmstudio.playTokenThresholdSound') ||
-				e.affectsConfiguration('lmstudio.tokenSoundThreshold')) {
+				e.affectsConfiguration('lmstudio.tokenSoundThreshold') ||
+				e.affectsConfiguration('lmstudio.autoCavemanPrompts') ||
+				e.affectsConfiguration('lmstudio.tokenBudgeting') ||
+				e.affectsConfiguration('lmstudio.contextOverflowPolicy') ||
+				e.affectsConfiguration('lmstudio.blockOversizedRequests') ||
+				e.affectsConfiguration('lmstudio.performanceOptimizations') ||
+				e.affectsConfiguration('lmstudio.toggleAllPerformance')) {
 				this.log('Configuration changed, will refresh client on next request');
 				this.loadSettings();
 				// Reset the client so it gets recreated with new settings
@@ -308,11 +497,37 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			this.verboseProgress = !!config.get<boolean>('verboseProgressReporting');
 			this.playTokenThresholdSound = !!config.get<boolean>('playTokenThresholdSound');
 			this.tokenSoundThreshold = Math.max(1, config.get<number>('tokenSoundThreshold', 10000));
+			this.autoCavemanPrompts = !!config.get<boolean>('autoCavemanPrompts');
+			this.performanceOptimizations = !!config.get<boolean>('performanceOptimizations');
+			this.contextOverflowPolicy = normalizeContextOverflowPolicy(config.get<string>('contextOverflowPolicy', DEFAULT_CONTEXT_OVERFLOW_POLICY));
+			this.blockOversizedRequests = config.get<boolean>('blockOversizedRequests', true);
+			
+			// Handle toggle all performance setting
+			const toggleAll = !!config.get<boolean>('toggleAllPerformance');
+			if (toggleAll) {
+				// Turn all performance features on
+				this.autoCavemanPrompts = true;
+				this.performanceOptimizations = true;
+				this.tokenBudgeting = true;
+			} else {
+				// Respect individual settings if toggle is off
+				this.autoCavemanPrompts = !!config.get<boolean>('autoCavemanPrompts');
+				this.performanceOptimizations = !!config.get<boolean>('performanceOptimizations');
+				this.tokenBudgeting = !!config.get<boolean>('tokenBudgeting');
+			}
+			
+			this.toggleAllPerformance = toggleAll;
 		} catch {
 			this.verbose = false;
 			this.verboseProgress = false;
 			this.playTokenThresholdSound = false;
 			this.tokenSoundThreshold = 10000;
+			this.autoCavemanPrompts = false;
+			this.performanceOptimizations = true;
+			this.tokenBudgeting = false;
+			this.contextOverflowPolicy = DEFAULT_CONTEXT_OVERFLOW_POLICY;
+			this.blockOversizedRequests = true;
+			this.toggleAllPerformance = false;
 		}
 	}
 
@@ -437,6 +652,24 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		this._onDidChange.fire();
 	}
 
+	private recordSignatureObservation(store: Map<string, number>, signature: string): { seenBefore: boolean; count: number; } {
+		const previousCount = store.get(signature) ?? 0;
+		const nextCount = previousCount + 1;
+		store.set(signature, nextCount);
+
+		if (store.size > this.MAX_SIGNATURE_HISTORY) {
+			const oldestKey = store.keys().next().value;
+			if (oldestKey) {
+				store.delete(oldestKey);
+			}
+		}
+
+		return {
+			seenBefore: previousCount > 0,
+			count: nextCount,
+		};
+	}
+
 	private ensureClient(): LMStudioClient | null {
 		const baseUrl = this.getBaseUrl();
 		const apiKey = this.getApiKey();
@@ -524,9 +757,12 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		// Check if we have cached models that are still valid
 		const now = Date.now();
 		if (this.cachedModels && (now - this.cacheTimestamp) < this.CACHE_DURATION) {
+			this.cacheHits++;
 			this.log('Using cached models');
 			return this.cachedModels;
 		}
+
+		this.cacheMisses++;
 
 		// Try to get loaded models from LM Studio dynamically
 		try {
@@ -696,8 +932,9 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		try {
 		this.showProgressStatus('LM Studio preparing prompt');
 		// Convert VS Code messages to LM Studio chat format
+		let currentContextLength = model.maxInputTokens;
 		const maxToolResultTokens = Math.max(1200, Math.min(DEFAULT_MAX_TOOL_RESULT_TOKENS, Math.floor(model.maxInputTokens * 0.08)));
-		const chatHistory = {
+		const chatHistory: LmStudioChatHistory = {
 			messages: messages.map((msg, index) => {
 			const convertedMessage = toLmStudioMessage(msg, maxToolResultTokens);
 			const preview = JSON.stringify(convertedMessage).substring(0, 160);
@@ -731,6 +968,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 				try {
 					const actualContextLength = await llmModel.getContextLength();
+					currentContextLength = actualContextLength;
 					if (actualContextLength !== model.maxInputTokens) {
 						this.log(`Model context length changed from ${model.maxInputTokens} to ${actualContextLength}; refreshing cached metadata`);
 						this.syncCachedModelMetadata(llmModel.identifier, actualContextLength);
@@ -758,6 +996,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			let maxTokensPerSecond = -Infinity;
 			let totalTokensPerSecond = 0;
 			let tokenCount = 0;
+			let visibleResponseText = '';
 
 			// Helper function to flush accumulated content
 			const flushContent = () => {
@@ -773,14 +1012,105 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				}
 			};
 
+			// Define predictionOptions before using it
 			const predictionOptions = {
 				maxTokens: options.modelOptions?.maxTokens || 8192,
 				rawTools: toLmStudioRawTools(options.tools, options.toolMode),
+				contextOverflowPolicy: this.contextOverflowPolicy,
 			};
+
+			// Apply auto-caveman prompt reduction if enabled
+			let processedChatHistory = chatHistory;
+			if (this.autoCavemanPrompts && this.performanceOptimizations) {
+				this.log('Auto-caveman prompt reduction enabled; prepending compression instruction to the request');
+				// Preprocess the chat history to make prompts more concise
+				const cavemanPrompt = "Please make this prompt as concise as possible while preserving all essential information and meaning. Keep it brief but complete.";
+				
+				// Create a system message with the caveman instruction
+				const systemMessage = {
+					role: 'system' as const,
+					content: [{ type: 'text' as const, text: cavemanPrompt }]
+				};
+				
+				// Insert the system message at the beginning of the conversation
+				processedChatHistory = {
+					messages: [systemMessage, ...chatHistory.messages]
+				};
+				
+				// Calculate token savings if verbose logging is enabled
+				if (this.verbose) {
+					const originalTokens = estimateTokenCount(JSON.stringify(chatHistory));
+					const processedTokens = estimateTokenCount(JSON.stringify(processedChatHistory));
+					const tokenSavings = originalTokens - processedTokens;
+					
+					if (tokenSavings > 0) {
+						this.log(`🗿 Caveman prompt reduction: ${tokenSavings} tokens saved (${Math.round((tokenSavings/originalTokens)*100)}% reduction)`);
+					} else {
+						this.log(`🗿 Caveman prompt reduction active; prompt size changed by ${tokenSavings} tokens after adding the compression instruction`);
+					}
+				}
+			}
+			
+			const requestedOutputTokens = Math.min(predictionOptions.maxTokens, model.maxOutputTokens || predictionOptions.maxTokens);
+			const contextSafetyMargin = Math.min(2048, Math.max(256, Math.floor(currentContextLength * 0.05)));
+			const maxPromptTokens = Math.max(1024, currentContextLength - requestedOutputTokens - contextSafetyMargin);
+
+			// Apply token budgeting if enabled - monitor and warn about approaching limits
+			let budgetResult = {
+				chatHistory: processedChatHistory,
+				originalTokens: estimateChatHistoryTokens(processedChatHistory, predictionOptions.rawTools),
+				finalTokens: estimateChatHistoryTokens(processedChatHistory, predictionOptions.rawTools),
+				droppedMessageCount: 0,
+				truncatedMessageCount: 0,
+				wasShortened: false,
+				fitsWithinBudget: true,
+			};
+			if (this.tokenBudgeting && this.performanceOptimizations) {
+				budgetResult = enforceHistoryTokenBudget(processedChatHistory, predictionOptions.rawTools, maxPromptTokens);
+				processedChatHistory = budgetResult.chatHistory;
+				const totalEstimatedTokens = budgetResult.finalTokens;
+				const contextLimit = currentContextLength;
+				const warningThreshold = Math.floor(contextLimit * 0.8); // Warn at 80% usage
+				this.log(`Token budgeting active: estimated ${totalEstimatedTokens}/${maxPromptTokens} prompt tokens before sending request (context ${contextLimit}, reserved output ${requestedOutputTokens}, safety margin ${contextSafetyMargin}, overflow policy ${this.contextOverflowPolicy})`);
+
+				if (budgetResult.wasShortened) {
+					const budgetNotice = `💸 Context shortened due to max size (~${budgetResult.originalTokens} -> ~${budgetResult.finalTokens} prompt tokens)\n\n`;
+					this.log(`Context budget enforced: ${budgetResult.originalTokens} -> ${budgetResult.finalTokens} prompt tokens, dropped ${budgetResult.droppedMessageCount} message(s), truncated ${budgetResult.truncatedMessageCount} message(s), prompt budget ${maxPromptTokens}, overflow policy ${this.contextOverflowPolicy}`);
+					progress.report(new LanguageModelTextPart(budgetNotice));
+				}
+
+				if (!budgetResult.fitsWithinBudget) {
+					if (this.blockOversizedRequests) {
+						const budgetFailureMessage = [
+							`💸 Context shortened due to max size (~${budgetResult.originalTokens} -> ~${budgetResult.finalTokens} prompt tokens).`,
+							'',
+							`The request is still too large to send safely. LM Studio currently reports a context size of ~${currentContextLength} tokens for this model.`,
+							'Consider increasing the context size in LM Studio, reducing the conversation history, or lowering tool output volume.',
+						].join('\n');
+						this.log(`Provider-side budgeter could not fully fit the request within ~${maxPromptTokens} prompt tokens; aborting before LM Studio call. Current LM Studio context length is ~${currentContextLength} tokens. Overflow policy '${this.contextOverflowPolicy}' was not used because the request was blocked locally.`);
+						progress.report(new LanguageModelTextPart(budgetFailureMessage));
+						this.showCompletedStatus(`LM Studio blocked oversized request (~${budgetResult.finalTokens}/${maxPromptTokens} prompt tok)`);
+						return;
+					}
+
+					const continueAnywayMessage = [
+						`💸 Context shortened due to max size (~${budgetResult.originalTokens} -> ~${budgetResult.finalTokens} prompt tokens).`,
+						'',
+						`The request is still estimated to exceed the safe prompt budget. LM Studio currently reports a context size of ~${currentContextLength} tokens for this model.`,
+						'Continuing anyway because local blocking is disabled. Consider increasing the context size in LM Studio if this fails.',
+					].join('\n');
+					this.log(`Provider-side budgeter could not fully fit the request within ~${maxPromptTokens} prompt tokens, but continuing because oversized-request blocking is disabled. Current LM Studio context length is ~${currentContextLength} tokens. Overflow policy '${this.contextOverflowPolicy}' may still trim or reject the request.`);
+					progress.report(new LanguageModelTextPart(continueAnywayMessage));
+				}
+				
+				if (totalEstimatedTokens > warningThreshold) {
+					this.log(`⚠️ Token budget warning: ${totalEstimatedTokens} tokens used, approaching limit of ${contextLimit} tokens`);
+				}
+			}
 			
 			// Calculate system prompt size if there are system messages
 			let systemPromptTokens = 0;
-			const systemMessages = chatHistory.messages.filter(msg => msg.role === 'system');
+			const systemMessages = processedChatHistory.messages.filter(msg => msg.role === 'system');
 			if (systemMessages.length > 0) {
 				const systemPromptContent = systemMessages.map(msg => 
 					msg.content.map(c => c.type === 'text' ? c.text : '').join('')
@@ -792,7 +1122,22 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				}
 			}
 			
-			const estimatedPromptTokens = estimateTokenCount(JSON.stringify({ chatHistory, rawTools: predictionOptions.rawTools.type === 'toolArray' ? predictionOptions.rawTools.tools : [] }));
+			const estimatedPromptTokens = estimateChatHistoryTokens(processedChatHistory, predictionOptions.rawTools);
+			const requestSignature = hashPayload({
+				modelId: llmModel.identifier,
+				chatHistory: processedChatHistory,
+				maxTokens: predictionOptions.maxTokens,
+				rawTools: predictionOptions.rawTools,
+				contextOverflowPolicy: predictionOptions.contextOverflowPolicy,
+			});
+			const requestObservation = this.recordSignatureObservation(this.requestSignatureCounts, requestSignature);
+			if (requestObservation.seenBefore) {
+				this.requestReuseHits++;
+				this.log(`Request reuse detected: signature=${requestSignature} seen ${requestObservation.count} time(s)`);
+			} else {
+				this.requestReuseMisses++;
+				this.log(`Request signature miss: signature=${requestSignature}`);
+			}
 
 			const predictionCallbacks = {
 				onPromptProcessingProgress: (promptProgress: number) => {
@@ -833,9 +1178,9 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				...predictionCallbacks,
 			};
 
-			this.log(`Invoking respond() with options ${JSON.stringify({ maxTokens: predictionOptions.maxTokens, hasTools: predictionOptions.rawTools.type === 'toolArray', forceTool: predictionOptions.rawTools.type === 'toolArray' ? !!predictionOptions.rawTools.force : false })} historyLength=${chatHistory.messages.length}`);
+			this.log(`Invoking respond() with options ${JSON.stringify({ maxTokens: predictionOptions.maxTokens, hasTools: predictionOptions.rawTools.type === 'toolArray', forceTool: predictionOptions.rawTools.type === 'toolArray' ? !!predictionOptions.rawTools.force : false, contextOverflowPolicy: predictionOptions.contextOverflowPolicy })} historyLength=${processedChatHistory.messages.length}`);
 			this.log(`Estimated prompt tokens before send: ~${estimatedPromptTokens}`);
-			const prediction = llmModel.respond(chatHistory, responseOptions);
+			const prediction = llmModel.respond(processedChatHistory, responseOptions);
 
 			// Stream the response
 			for await (const fragment of prediction) {
@@ -880,6 +1225,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 					// Only accumulate non-empty content
 					if (content.length > 0) {
+						visibleResponseText += content;
 						accumulatedContent += content;
 						
 						const now = Date.now();
@@ -931,6 +1277,21 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			await prediction;
 			const ended = Date.now();
 			this.log(`Streaming complete fragments=${fragmentCount} chars=${receivedChars} toolCalls=${receivedToolCalls} duration=${ended-started}ms firstFragmentLatency=${firstFragmentTime?firstFragmentTime-started:'n/a'}ms`);
+			if (visibleResponseText || receivedToolCalls > 0) {
+				const responseSignature = hashPayload({
+					modelId: llmModel.identifier,
+					responseText: visibleResponseText,
+					toolCalls: receivedToolCalls,
+				});
+				const responseObservation = this.recordSignatureObservation(this.responseSignatureCounts, responseSignature);
+				if (responseObservation.seenBefore) {
+					this.responseReuseHits++;
+					this.log(`Response reuse detected: signature=${responseSignature} seen ${responseObservation.count} time(s)`);
+				} else {
+					this.responseReuseMisses++;
+					this.log(`Response signature miss: signature=${responseSignature}`);
+				}
+			}
 			const totalTokens = estimatedPromptTokens + generatedTokens;
 			
 			// Calculate final statistics for tokens per second
@@ -942,6 +1303,26 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			
 			const finalSummary = `LM Studio done: ~${estimatedPromptTokens} prompt tok, ~${generatedTokens} gen tok, ~${totalTokens} total tok, ${Math.round((ended - started) / 1000)}s`;
 			this.log(finalSummary);
+			
+			// Log model cache statistics if we have data
+			if (this.verbose && (this.cacheHits > 0 || this.cacheMisses > 0)) {
+				const totalRequests = this.cacheHits + this.cacheMisses;
+				const hitRate = ((this.cacheHits / totalRequests) * 100).toFixed(1);
+				const cacheStats = `Model cache stats: ${this.cacheHits} hits, ${this.cacheMisses} misses, ${hitRate}% hit rate`;
+				this.log(cacheStats);
+			}
+
+			if (this.verbose && (this.requestReuseHits > 0 || this.requestReuseMisses > 0)) {
+				const totalRequests = this.requestReuseHits + this.requestReuseMisses;
+				const hitRate = ((this.requestReuseHits / totalRequests) * 100).toFixed(1);
+				this.log(`Request reuse stats: ${this.requestReuseHits} repeated, ${this.requestReuseMisses} new, ${hitRate}% repeated`);
+			}
+
+			if (this.verbose && (this.responseReuseHits > 0 || this.responseReuseMisses > 0)) {
+				const totalResponses = this.responseReuseHits + this.responseReuseMisses;
+				const hitRate = ((this.responseReuseHits / totalResponses) * 100).toFixed(1);
+				this.log(`Response reuse stats: ${this.responseReuseHits} repeated, ${this.responseReuseMisses} new, ${hitRate}% repeated`);
+			}
 			
 			// Log token statistics if we have data
 			if (tokenCount > 0 && firstFragmentTime !== undefined) {

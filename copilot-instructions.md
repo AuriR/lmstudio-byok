@@ -58,9 +58,10 @@ These instructions guide the AI agent on coding style, design philosophy, and be
 2. **Token Threshold Notifications**: Add configurable sound notifications for high-token usage scenarios
 3. **Error Handling**: Gracefully handle connection issues, model loading problems, and API inconsistencies
 4. **Configuration-Driven Features**: Make all enhanced features configurable via VS Code settings
+5. **Performance Optimization Features**: Implement toggleable performance optimizations including token budgeting, auto-caveman prompts, and rolling summaries that can be enabled/disabled through VS Code settings to allow users to test and compare performance impact
 
 ### Testing Considerations
 1. **Local Environment Testing**: Always test with actual LM Studio instances to verify functionality
 2. **Model Context Verification**: Verify that context length metadata accurately reflects loaded models
 3. **Role Mapping Validation**: Test that system messages are correctly preserved through the conversion process
-4. **Feature Toggle Testing**: Ensure optional features (progress reporting, sounds) work correctly when enabled/disabled
+4. **Feature Toggle Testing**: Ensure optional features (progress reporting, sounds, performance optimizations) work correctly when enabled/disabled

@@ -10,7 +10,7 @@
 		"type": "git",
 		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.4.3",
+	"version": "0.5.1",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -51,8 +51,8 @@
 				"category": "LM Studio"
 			},
 			{
-				"command": "lmstudio.showWelcome",
-				"title": "Show Welcome",
+				"command": "lmstudio.showDocumentation",
+				"title": "Show Documentation",
 				"category": "LM Studio"
 			}
 		],
@@ -66,32 +66,78 @@
 				},
 				"lmstudio.apiKey": {
 					"type": "string",
-					"description": "Your LM Studio API key (optional for local instances). You can also set this via the LMSTUDIO_API_KEY environment variable.",
+					"description": "🔑 Your LM Studio API key (optional for local instances). You can also set this via the LMSTUDIO_API_KEY environment variable.",
 					"scope": "application"
 				},
 				"lmstudio.verboseLogging": {
 					"type": "boolean",
 					"default": false,
-					"description": "Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting.",
+					"description": "🛠️ Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting.",
 					"scope": "application"
 				},
 				"lmstudio.verboseProgressReporting": {
 					"type": "boolean",
 					"default": false,
-					"description": "Show detailed LM Studio prompt/generation progress in the status bar and output channel.",
+					"description": "📈 Show detailed LM Studio prompt/generation progress in the status bar and output channel.",
 					"scope": "application"
 				},
 				"lmstudio.playTokenThresholdSound": {
 					"type": "boolean",
 					"default": false,
-					"description": "Play a short cash-register style completion sound when a request exceeds the configured token threshold. Currently implemented for Windows.",
+					"description": "🔊 Play a short cash-register style completion sound when a request exceeds the configured token threshold. Currently implemented for Windows.",
 					"scope": "application"
 				},
 				"lmstudio.tokenSoundThreshold": {
 					"type": "number",
 					"default": 10000,
 					"minimum": 1,
-					"description": "Approximate total token count required before the completion sound plays.",
+					"description": "🔊 Approximate total token count required before the completion sound plays.",
+					"scope": "application"
+				},
+				"lmstudio.autoCavemanPrompts": {
+					"type": "boolean",
+					"default": false,
+					"description": "🗿 Prepend a system instruction asking the model to be concise while preserving essentials. This is a behavior hint, not a true prompt compaction pass.",
+					"scope": "application"
+				},
+				"lmstudio.performanceOptimizations": {
+					"type": "boolean",
+					"default": true,
+					"description": "⚡ Master gate for the implemented performance features. When false, feature-specific settings such as auto-caveman prompts and token budgeting are ignored.",
+					"scope": "application"
+				},
+				"lmstudio.tokenBudgeting": {
+					"type": "boolean",
+					"default": false,
+					"description": "💰 Estimate request token usage before send and log a warning when the prompt approaches the model context window.",
+					"scope": "application"
+				},
+				"lmstudio.contextOverflowPolicy": {
+					"type": "string",
+					"default": "truncateMiddle",
+					"enum": [
+						"stopAtLimit",
+						"truncateMiddle",
+						"rollingWindow"
+					],
+					"enumDescriptions": [
+						"Stop generation when the context window limit is reached.",
+						"Keep the system prompt and first user message, then truncate the middle when LM Studio needs to shorten context.",
+						"Use LM Studio's rolling window behavior to trim older context as needed."
+					],
+					"markdownDescription": "🪟 Select how LM Studio should handle context overflow if a request still exceeds the effective budget after provider-side trimming.",
+					"scope": "application"
+				},
+				"lmstudio.blockOversizedRequests": {
+					"type": "boolean",
+					"default": true,
+					"description": "🛑 Block requests locally when they still exceed the estimated prompt budget after trimming. Disable this to let LM Studio attempt the request even if it may fail.",
+					"scope": "application"
+				},
+				"lmstudio.toggleAllPerformance": {
+					"type": "boolean",
+					"default": false,
+					"description": "💯 Toggle all currently implemented performance features on or off at once.",
 					"scope": "application"
 				}
 			}

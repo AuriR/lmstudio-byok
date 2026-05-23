@@ -32,26 +32,33 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(testConnectionCommand);
 
-	// Command to show welcome page
-	const showWelcomeCommand = vscode.commands.registerCommand('lmstudio.showWelcome', () => {
-		showWelcomePage();
-	});
-	context.subscriptions.push(showWelcomeCommand);
+    // Command to show documentation page
+    const showDocumentationCommand = vscode.commands.registerCommand('lmstudio.showDocumentation', () => {
+        showDocumentationPage();
+    });
+    context.subscriptions.push(showDocumentationCommand);
 
-	// Show welcome page on first activation (with a small delay to ensure UI is ready)
+    // Backward-compatible alias for older command references
+    const showWelcomeAliasCommand = vscode.commands.registerCommand('lmstudio.showWelcome', () => {
+        showDocumentationPage();
+    });
+    context.subscriptions.push(showWelcomeAliasCommand);
+
+    // Show documentation page on first activation (with a small delay to ensure UI is ready)
 	setTimeout(() => {
-		const hasShownWelcome = context.globalState.get('lmstudio.welcomeShown', false);
-		if (!hasShownWelcome) {
-			showWelcomePage();
-			context.globalState.update('lmstudio.welcomeShown', true);
+        const hasShownDocumentation = context.globalState.get('lmstudio.documentationShown', context.globalState.get('lmstudio.welcomeShown', false));
+        if (!hasShownDocumentation) {
+            showDocumentationPage();
+            context.globalState.update('lmstudio.documentationShown', true);
+            context.globalState.update('lmstudio.welcomeShown', true);
 		}
 	}, 1000);
 }
 
-function showWelcomePage() {
+function showDocumentationPage() {
 	const panel = vscode.window.createWebviewPanel(
-		'lmstudioWelcome',
-		'LM Studio Setup Guide',
+        'lmstudioDocumentation',
+        'LM Studio Documentation',
 		vscode.ViewColumn.One,
 		{
 			enableScripts: true,
@@ -59,16 +66,16 @@ function showWelcomePage() {
 		}
 	);
 
-	panel.webview.html = getWelcomeContent();
+    panel.webview.html = getDocumentationContent();
 }
 
-function getWelcomeContent(): string {
+function getDocumentationContent(): string {
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LM Studio Setup Guide</title>
+    <title>LM Studio Documentation</title>
     <style>
         body {
             font-family: var(--vscode-font-family);
@@ -143,10 +150,10 @@ function getWelcomeContent(): string {
 </head>
 <body>
     <div class="container">
-        <h1>🚀 Welcome to LM Studio BYOK Chat Provider</h1>
+        <h1>📘 LM Studio BYOK Documentation</h1>
 
         <div class="success">
-            <strong>Extension Activated!</strong> Follow the steps below to start using local LLMs with GitHub Copilot Chat.
+            <strong>Extension Activated!</strong> Use this documentation to configure, troubleshoot, and tune LM Studio BYOK in VS Code.
         </div>
 
         <h2>📋 Quick Setup Steps</h2>
@@ -219,7 +226,10 @@ function getWelcomeContent(): string {
   "lmstudio.verboseLogging": false,
   "lmstudio.verboseProgressReporting": false,
   "lmstudio.playTokenThresholdSound": false,
-  "lmstudio.tokenSoundThreshold": 10000
+    "lmstudio.tokenSoundThreshold": 10000,
+    "lmstudio.tokenBudgeting": true,
+    "lmstudio.contextOverflowPolicy": "truncateMiddle",
+    "lmstudio.blockOversizedRequests": true
 }</div>
 
         <div class="warning">
@@ -231,7 +241,7 @@ function getWelcomeContent(): string {
             <strong>Commands available:</strong><br>
             • <span class="command">LM Studio: Test Connection</span> - Verify server connectivity<br>
             • <span class="command">LM Studio: Refresh Available Models</span> - Update model list<br>
-            • <span class="command">LM Studio: Show Welcome</span> - Show this guide again
+            • <span class="command">LM Studio: Show Documentation</span> - Show this guide again
         </p>
 
         <h2>🫤 Troubleshooting</h2>
@@ -280,6 +290,24 @@ function getWelcomeContent(): string {
 
         <h2>🎯 Need Additional Help?</h2>
         <p>If you have any questions, suggestions, or run into issues, please reach out! You can find me on <a href="https://www.linkedin.com/in/aurirahimzadeh" target="_blank">LinkedIn</a> or open an issue on the <a href="https://github.com/AuriR/lmstudio-byok" target="_blank">GitHub repo</a>. You can also follow my <a href="https://auri.net" target="_blank">blog</a> and <a href="https://www.youtube.com/watch?v=gd4Ji_K-CVc&list=PLlLqmBbRNU_tycxTWuCBVAA9zjALXr0Cr" target="_blank">YouTube</a> adventures.</p>
+        
+        <h2>⚙️ Performance Tuning Features</h2>
+        
+        <div class="step">
+            <div class="step-number">Performance Optimizations</div>
+            <p>This extension provides several advanced performance tuning features that can help manage context windows and optimize performance when working with local LLMs:</p>
+            <ul>
+                <li><strong>Auto-Caveman Prompts:</strong> Prepends a concision instruction so the model aims for shorter, denser responses</li>
+                <li><strong>Token Budgeting:</strong> Estimates request size before send, shortens older history when needed, and posts a chat notice when context is shortened</li>
+                <li><strong>Context Overflow Policy:</strong> Lets you choose LM Studio's fallback behavior with a dropdown: Stop At Limit, Truncate Middle, or Rolling Window</li>
+                <li><strong>Oversized Request Blocking:</strong> Blocks still-oversized requests locally by default, while allowing advanced users to continue anyway if they disable the safeguard</li>
+                <li><strong>Toggle All Performance:</strong> Enables the currently implemented performance features at once for convenient testing</li>
+            </ul>
+            <p>The individual feature settings are off by default. Enable verbose logging as well if you want to confirm when these request-time paths are active.</p>
+            <p>When context must be shortened, the chat window will show a notice. If the request is still too large, the extension can block it locally and report the current context size returned by LM Studio.</p>
+            <p>Enable these features in VS Code Settings (Ctrl+,) by searching for "LM Studio" and setting the appropriate options to true.</p>
+        </div>
+
         <div class="success">
             <strong>Happy coding with local LLMs! 🎉</strong><br>
             Your privacy is protected - everything runs locally on your machine.
