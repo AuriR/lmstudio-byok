@@ -1,16 +1,16 @@
 {
-	"name": "lmstudio-byok-chat-provider",
+	"name": "lmstudio-byok-chat-provider-auri",
 	"enabledApiProposals": [
 		"chatProvider"
 	],
-	"publisher": "pierceboggan",
-	"displayName": "LM Studio BYOK Chat Provider",
-	"description": "Bring your own LM Studio instance to use local LLM models in GitHub Copilot Chat.",
+	"publisher": "AuriRahimzadeh",
+	"displayName": "LM Studio BYOK Chat Provider (Auri Update)",
+	"description": "Bring your own LM Studio instance to use local LLM models in GitHub Copilot Chat. Updated to use the latest LM Studio API and such by Auri Rahimzadeh, based on an older extension by Pierce Boggan. This extension connects to your LM Studio server to provide language model responses directly within GitHub Copilot Chat, allowing you to leverage local LLMs for code generation, explanations, and more. Cool logging features enable you to see detailed request/response info and token usage in the 'LM Studio' output channel. You can even play a cheesy sound when you 'spend' a lot of tokens. Configure your LM Studio connection settings in the extension settings to get started.",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/pierceboggan/fireworks-byok"
+		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.1.0",
+	"version": "0.4.3",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -21,8 +21,19 @@
 	"activationEvents": [
 		"onStartupFinished"
 	],
+	"icon": "images/icon_marketplace.png",
+	"screenshots": [
+		{
+			"description": "Main extension interface showing model selection and connection status",
+			"path": "images/screenshot_1.png"
+		}
+	],
+	"galleryBanner": {
+		"color": "#C4C4C4",
+		"theme": "dark"
+	},
 	"contributes": {
-		"languageModels": [
+		"languageModelChatProviders": [
 			{
 				"vendor": "lmstudio",
 				"displayName": "LM Studio"
@@ -50,8 +61,8 @@
 			"properties": {
 				"lmstudio.baseUrl": {
 					"type": "string",
-					"default": "http://localhost:1234",
-					"description": "The base URL for your LM Studio server. Default is http://localhost:1234"
+					"default": "ws://localhost:1234",
+					"description": "The base URL for your LM Studio server. Use WebSocket protocol (ws:// or wss://). Default is ws://localhost:1234"
 				},
 				"lmstudio.apiKey": {
 					"type": "string",
@@ -62,6 +73,25 @@
 					"type": "boolean",
 					"default": false,
 					"description": "Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting.",
+					"scope": "application"
+				},
+				"lmstudio.verboseProgressReporting": {
+					"type": "boolean",
+					"default": false,
+					"description": "Show detailed LM Studio prompt/generation progress in the status bar and output channel.",
+					"scope": "application"
+				},
+				"lmstudio.playTokenThresholdSound": {
+					"type": "boolean",
+					"default": false,
+					"description": "Play a short cash-register style completion sound when a request exceeds the configured token threshold. Currently implemented for Windows.",
+					"scope": "application"
+				},
+				"lmstudio.tokenSoundThreshold": {
+					"type": "number",
+					"default": 10000,
+					"minimum": 1,
+					"description": "Approximate total token count required before the completion sound plays.",
 					"scope": "application"
 				}
 			}
