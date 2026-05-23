@@ -10,7 +10,7 @@
 		"type": "git",
 		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.4.2",
+	"version": "0.4.3",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},

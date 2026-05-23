@@ -164,14 +164,14 @@ function getWelcomeContent(): string {
             <div class="step-number">Step 2: Download a Model</div>
             <p>In LM Studio, go to the <strong>Discover</strong> tab and download a model:</p>
             <ul>
-                <li><strong>Recommended for beginners:</strong> Qwen2.5-7B-Instruct (4.68 GB)</li>
-                <li><strong>For better performance:</strong> Meta-Llama-3.1-8B-Instruct (4.92 GB)</li>
-                <li><strong>Lightweight option:</strong> Ministral-8B-Instruct (4.67 GB)</li>
+                <li><strong>Recommended for beginners:</strong> Qwen3-Coder-Next</li>
+                <li><strong>For better performance:</strong> Meta-Llama-3.1-8B-Instruct</li>
+                <li><strong>Lightweight option:</strong> Ministral-8B-Instruct</li>
             </ul>
         </div>
 
         <div class="step">
-            <div class="step-number">Step 3: Start the Local Server</div>
+            <div class="step-number">Step 3: Start the Server</div>
             <p>In LM Studio:</p>
             <ul>
                 <li>Click the <strong>"Local Server"</strong> tab</li>
@@ -179,17 +179,33 @@ function getWelcomeContent(): string {
                 <li>Load a model by clicking <strong>"Select a model"</strong></li>
                 <li>Wait for the model to finish loading (green indicator)</li>
             </ul>
+            <p>LM Studio can also run over the network. Refer to LM Studio documentation for advanced network configuration if needed. It's pretty straightforward and generally does not affect performance.</p>
+            <p>If you can't reach the server, ensure your firewall allows connections to the LM Studio server port (default 1234) and that you're using the correct base URL in the extension settings.</p>
+            <p>If you have questions, check online or ping me on LinkedIn.</p>
+        </div>
+
+                <div class="step">
+            <div class="step-number">Step 4: Confirm Settings in VS Code</div>
+            <p>Open preferences in VS Code via Ctrl+, and search for LM Studio:</p>
+            <div>Make sure Base URL is set. Use <i><b>ws://</b></i> instead of <i><b>http://</b></i></div>
+            <div>Optionally enable verbose logging and progress reporting, if you want to see token usage and prompt percentage</div>
         </div>
 
         <div class="step">
-            <div class="step-number">Step 4: Test Your Connection</div>
+            <div class="step-number">Step 5: Test Your Connection</div>
             <p>Use VS Code commands to verify everything works:</p>
             <div class="command">Ctrl+Shift+P → "LM Studio: Test Connection"</div>
             <div class="command">Ctrl+Shift+P → "LM Studio: Refresh Available Models"</div>
+            <p>You should see a success message with the number of models found. If you get an error, check your LM Studio server status and settings.</p>
+        </div>
+
+                <div class="step">
+            <div class="step-number">Step 6: Select a Model</div>
+            <p>Make sure to select a model in the Copilot window. The BYOK servers will have <b>BYOK:</b> prepended to them so it's clear which are local.</p>
         </div>
 
         <div class="step">
-            <div class="step-number">Step 5: Start Chatting!</div>
+            <div class="step-number">Step 7: Start Chatting!</div>
             <p>Open GitHub Copilot Chat and select your LM Studio model from the model picker. Look for models with the "LM Studio" family name.</p>
         </div>
 
@@ -198,7 +214,7 @@ function getWelcomeContent(): string {
         <p>You can customize settings in VS Code Settings (Ctrl+,) by searching for "LM Studio":</p>
 
         <div class="settings-code">{
-  "lmstudio.baseUrl": "http://localhost:1234",
+  "lmstudio.baseUrl": "ws://localhost:1234",
   "lmstudio.apiKey": "your-api-key-here",
   "lmstudio.verboseLogging": false,
   "lmstudio.verboseProgressReporting": false,
@@ -207,27 +223,18 @@ function getWelcomeContent(): string {
 }</div>
 
         <div class="warning">
-            <strong>Note:</strong> API key is optional for local instances. Only needed if you're connecting to a remote LM Studio server.
+            <strong>Note:</strong> API key is optional for local instances. Only needed if you're connecting to a remote LM Studio server that requires authentication. By default, LM Studio does not require an API key.
         </div>
 
-        <h2>� New Features</h2>
-        
-        <div class="step">
-            <div class="step-number">Verbose Logging</div>
-            <p>Enable detailed diagnostic logging by setting <code>"lmstudio.verboseLogging": true</code> to help troubleshoot connection issues or understand what's happening during model inference.</p>
-        </div>
+        <h2>⌨️ Keyboard Shortcuts</h2>
+        <p>
+            <strong>Commands available:</strong><br>
+            • <span class="command">LM Studio: Test Connection</span> - Verify server connectivity<br>
+            • <span class="command">LM Studio: Refresh Available Models</span> - Update model list<br>
+            • <span class="command">LM Studio: Show Welcome</span> - Show this guide again
+        </p>
 
-        <div class="step">
-            <div class="step-number">Cha-Ching Sound</div>
-            <p>Enable a cash-register style sound notification when responses exceed the token threshold by setting <code>"lmstudio.playTokenThresholdSound": true</code>. This feature plays a sound when a response exceeds the configured token count (default 10,000 tokens).</p>
-        </div>
-
-        <div class="step">
-            <div class="step-number">Progress Reporting</div>
-            <p>Enable detailed progress reporting in the status bar and output channel by setting <code>"lmstudio.verboseProgressReporting": true</code> to see real-time feedback about prompt/generation progress.</p>
-        </div>
-
-        <h2>�🐛 Troubleshooting</h2>
+        <h2>🫤 Troubleshooting</h2>
 
         <div class="step">
             <div class="step-number">Enable Diagnostic Logging</div>
@@ -247,17 +254,31 @@ function getWelcomeContent(): string {
                 <li><strong>No models available:</strong> Load a model in LM Studio's Local Server tab</li>
                 <li><strong>Weird response formatting:</strong> The extension now filters out model artifacts automatically</li>
                 <li><strong>Slow responses:</strong> Try a smaller model or check your system resources</li>
+                <li><strong>LM Studio Context Size Errors:</strong> Increase context size in LM Studio for the selected model</li>
+                <li><strong>LM Studio Slow:</strong> Decrease context size in LM Studio for the selected model. There are many tuning tips available online - it all depends on your config and model.</li>
             </ul>
+            <p><b>IMPORTANT:</b> Your prompt isn't the "entire" prompt. System prompt, copilot instructions, and so forth are also sent. These increase the token count "behind the scenes." You can view LM Studio debug logs from VS Code's Output dropdown.</p>
         </div>
 
-        <h2>🎯 Need Help?</h2>
-        <p>
-            <strong>Commands available:</strong><br>
-            • <span class="command">LM Studio: Test Connection</span> - Verify server connectivity<br>
-            • <span class="command">LM Studio: Refresh Available Models</span> - Update model list<br>
-            • <span class="command">LM Studio: Show Welcome</span> - Show this guide again
-        </p>
+        <h2>🚀 New Features</h2>
+        
+        <div class="step">
+            <div class="step-number">Progress Reporting</div>
+            <p>Enable detailed progress reporting in the status bar and output channel by setting <code>"lmstudio.verboseProgressReporting": true</code> to see real-time feedback about prompt/generation progress. Tokenmaxxing locally FTW!</p>
+        </div>
 
+        <div class="step">
+            <div class="step-number">Verbose Logging</div>
+            <p>Enable detailed diagnostic logging by setting <code>"lmstudio.verboseLogging": true</code> to help troubleshoot connection issues or understand what's happening during model inference.</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Cha-Ching Sound</div>
+            <p>Enable a cash-register style sound notification when responses exceed the token threshold by setting <code>"lmstudio.playTokenThresholdSound": true</code>. This feature plays a sound when a response exceeds the configured token count (default 10,000 tokens).</p>
+        </div>
+
+        <h2>🎯 Need Additional Help?</h2>
+        <p>If you have any questions, suggestions, or run into issues, please reach out! You can find me on <a href="https://www.linkedin.com/in/aurirahimzadeh" target="_blank">LinkedIn</a> or open an issue on the <a href="https://github.com/AuriR/lmstudio-byok" target="_blank">GitHub repo</a>. You can also follow my <a href="https://auri.net" target="_blank">blog</a> and <a href="https://www.youtube.com/watch?v=gd4Ji_K-CVc&list=PLlLqmBbRNU_tycxTWuCBVAA9zjALXr0Cr" target="_blank">YouTube</a> adventures.</p>
         <div class="success">
             <strong>Happy coding with local LLMs! 🎉</strong><br>
             Your privacy is protected - everything runs locally on your machine.
