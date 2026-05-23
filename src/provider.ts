@@ -777,6 +777,21 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				maxTokens: options.modelOptions?.maxTokens || 8192,
 				rawTools: toLmStudioRawTools(options.tools, options.toolMode),
 			};
+			
+			// Calculate system prompt size if there are system messages
+			let systemPromptTokens = 0;
+			const systemMessages = chatHistory.messages.filter(msg => msg.role === 'system');
+			if (systemMessages.length > 0) {
+				const systemPromptContent = systemMessages.map(msg => 
+					msg.content.map(c => c.type === 'text' ? c.text : '').join('')
+				).join('\n\n');
+				
+				if (systemPromptContent.trim()) {
+					systemPromptTokens = estimateTokenCount(systemPromptContent);
+					this.log(`System Prompt Size: ${systemPromptTokens} tokens`);
+				}
+			}
+			
 			const estimatedPromptTokens = estimateTokenCount(JSON.stringify({ chatHistory, rawTools: predictionOptions.rawTools.type === 'toolArray' ? predictionOptions.rawTools.tools : [] }));
 
 			const predictionCallbacks = {
