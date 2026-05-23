@@ -254,6 +254,7 @@ function getWelcomeContent(): string {
                 <li><strong>No models available:</strong> Load a model in LM Studio's Local Server tab</li>
                 <li><strong>Weird response formatting:</strong> The extension now filters out model artifacts automatically</li>
                 <li><strong>Slow responses:</strong> Try a smaller model or check your system resources</li>
+                <li><strong>Ideal Context Size:</strong> I've found context size of 128K tokens for my use cases, but YMMV</li>
                 <li><strong>LM Studio Context Size Errors:</strong> Increase context size in LM Studio for the selected model</li>
                 <li><strong>LM Studio Slow:</strong> Decrease context size in LM Studio for the selected model. There are many tuning tips available online - it all depends on your config and model.</li>
             </ul>
