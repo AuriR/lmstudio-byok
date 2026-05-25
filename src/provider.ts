@@ -844,6 +844,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private plannerFyiInstructionPath = '';
 	private modelTuning: ModelTuningSettings = createDefaultModelTuningSettings();
 	private sessionMaxTokensOverride: number | undefined;
+	private _maxTokensRemainsNoticeShown = false;
 	private cacheHits = 0;
 	private cacheMisses = 0;
 	private readonly requestSignatureCounts = new Map<string, number>();
@@ -1996,10 +1997,14 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			this.sessionMaxTokensOverride = requestOverrideResult.overrides.maxTokensOverride;
 			const currentEffectiveMaxTokens = this.getEffectiveMaxTokens(options);
 			this.log(`Session max response tokens override set via /lmsmaxtokens ${currentEffectiveMaxTokens} (previous effective cap ${previousEffectiveMaxTokens})`);
-			const overrideNotice = previousEffectiveMaxTokens === currentEffectiveMaxTokens
-				? `LM Studio note: session max response tokens remains ${currentEffectiveMaxTokens}. This value stays in effect for later LM Studio requests until you change it again, use /lmsmaxtokensreset, or reload VS Code.`
-				: `LM Studio note: session max response tokens changed from ${previousEffectiveMaxTokens} to ${currentEffectiveMaxTokens}. This value stays in effect for later LM Studio requests until you change it again, use /lmsmaxtokensreset, or reload VS Code.`;
-			progress.report(new LanguageModelTextPart(`${overrideNotice}\n\n`));
+			if (previousEffectiveMaxTokens === currentEffectiveMaxTokens && !this._maxTokensRemainsNoticeShown) {
+				this._maxTokensRemainsNoticeShown = true;
+				const overrideNotice = `LM Studio note: session max response tokens remains ${currentEffectiveMaxTokens}. This value stays in effect for later LM Studio requests until you change it again, use /lmsmaxtokensreset, or reload VS Code.`;
+				progress.report(new LanguageModelTextPart(`${overrideNotice}\n\n`));
+			} else if (previousEffectiveMaxTokens !== currentEffectiveMaxTokens) {
+				const overrideNotice = `LM Studio note: session max response tokens changed from ${previousEffectiveMaxTokens} to ${currentEffectiveMaxTokens}. This value stays in effect for later LM Studio requests until you change it again, use /lmsmaxtokensreset, or reload VS Code.`;
+				progress.report(new LanguageModelTextPart(`${overrideNotice}\n\n`));
+			}
 		}
 			// Get a model instance - try to get the requested model or use the first available one
 			let llmModel;
