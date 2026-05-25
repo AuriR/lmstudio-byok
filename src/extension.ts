@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 import { LMStudioChatModelProvider } from './provider';
 
+const COMMAND_MESSAGE_TIMEOUT_MS = 5000;
+
+function showTransientCommandMessage(message: string, kind: 'info' | 'error' = 'info'): void {
+    const icon = kind === 'error' ? '$(error)' : '$(check)';
+    vscode.window.setStatusBarMessage(`${icon} ${message}`, COMMAND_MESSAGE_TIMEOUT_MS);
+}
+
 export function activate(context: vscode.ExtensionContext) {
     const provider = new LMStudioChatModelProvider(context.extensionPath);
 
@@ -11,7 +18,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Command to refresh models
 	const refreshCommand = vscode.commands.registerCommand('lmstudio.refreshModels', () => {
 		provider.refreshModels();
-		vscode.window.showInformationMessage('LM Studio models refreshed');
+        showTransientCommandMessage('LM Studio models refreshed');
 	});
 	context.subscriptions.push(refreshCommand);
 
@@ -22,15 +29,39 @@ export function activate(context: vscode.ExtensionContext) {
 			const models = await provider.prepareLanguageModelChat({ silent: false }, new vscode.CancellationTokenSource().token);
 
 			if (models.some(m => m.id === 'connection-error' || m.id === 'no-models-loaded')) {
-				vscode.window.showErrorMessage(`LM Studio connection failed. Found: ${models.map(m => m.name).join(', ')}`);
+                showTransientCommandMessage(`LM Studio connection failed. Found: ${models.map(m => m.name).join(', ')}`, 'error');
 			} else {
-				vscode.window.showInformationMessage(`LM Studio connected successfully! Found ${models.length} models: ${models.map(m => m.name).join(', ')}`);
+                showTransientCommandMessage(`LM Studio connected successfully! Found ${models.length} models: ${models.map(m => m.name).join(', ')}`);
 			}
 		} catch (error) {
-			vscode.window.showErrorMessage(`LM Studio connection test failed: ${error}`);
+            showTransientCommandMessage(`LM Studio connection test failed: ${error}`, 'error');
 		}
 	});
 	context.subscriptions.push(testConnectionCommand);
+
+    const smokeTestCommand = vscode.commands.registerCommand('lmstudio.runSmokeTest', async () => {
+        const result = await provider.runDebugSmokeTest();
+
+        if (result.success) {
+            showTransientCommandMessage(`LM Studio smoke test passed for ${result.modelId}.`);
+            return;
+        }
+
+        showTransientCommandMessage(`LM Studio smoke test failed: ${result.error ?? 'Unknown error'}`, 'error');
+    });
+    context.subscriptions.push(smokeTestCommand);
+
+    const plannerSmokeTestCommand = vscode.commands.registerCommand('lmstudio.runPlannerSmokeTest', async () => {
+        const result = await provider.runDebugPlannerSmokeTest();
+
+        if (result.success) {
+            showTransientCommandMessage(`LM Studio planner smoke test passed for ${result.modelId}.`);
+            return;
+        }
+
+        showTransientCommandMessage(`LM Studio planner smoke test failed: ${result.error ?? 'Unknown error'}`, 'error');
+    });
+    context.subscriptions.push(plannerSmokeTestCommand);
 
     // Command to show documentation page
     const showDocumentationCommand = vscode.commands.registerCommand('lmstudio.showDocumentation', () => {
@@ -214,6 +245,7 @@ function getDocumentationContent(): string {
         <div class="step">
             <div class="step-number">Step 7: Start Chatting!</div>
             <p>Open GitHub Copilot Chat and select your LM Studio model from the model picker. Look for models with the "LM Studio" family name.</p>
+            <p>If you want to force planner mode for one request, start the prompt with <strong>/plan</strong>. If you want to bypass planner mode for one request, start the prompt with <strong>/noplan</strong>.</p>
         </div>
 
         <h2>⚙️ Configuration (Optional)</h2>
@@ -229,7 +261,20 @@ function getDocumentationContent(): string {
     "lmstudio.tokenSoundThreshold": 10000,
     "lmstudio.tokenBudgeting": true,
     "lmstudio.contextOverflowPolicy": "truncateMiddle",
-    "lmstudio.blockOversizedRequests": true
+    "lmstudio.blockOversizedRequests": true,
+    "lmstudio.planner.enabled": false,
+    "lmstudio.modelTuning.temperature.enabled": false,
+    "lmstudio.modelTuning.temperature.value": 0.7,
+    "lmstudio.modelTuning.topP.enabled": false,
+    "lmstudio.modelTuning.topP.value": 0.8,
+    "lmstudio.modelTuning.topK.enabled": false,
+    "lmstudio.modelTuning.topK.value": 20,
+    "lmstudio.modelTuning.minP.enabled": false,
+    "lmstudio.modelTuning.minP.value": 0.05,
+    "lmstudio.modelTuning.repetitionPenalty.enabled": false,
+    "lmstudio.modelTuning.repetitionPenalty.value": 1.2,
+    "lmstudio.modelTuning.maxTokensInResponse.enabled": false,
+    "lmstudio.modelTuning.maxTokensInResponse.value": 4096
 }</div>
 
         <div class="warning">
@@ -241,8 +286,21 @@ function getDocumentationContent(): string {
             <strong>Commands available:</strong><br>
             • <span class="command">LM Studio: Test Connection</span> - Verify server connectivity<br>
             • <span class="command">LM Studio: Refresh Available Models</span> - Update model list<br>
-            • <span class="command">LM Studio: Show Documentation</span> - Show this guide again
+            • <span class="command">LM Studio: Show Documentation</span> - Show this guide again<br>
+            • <span class="command">LM Studio: Run Smoke Test (Debug Only)</span> - Validate the direct request path without exercising planner mode<br>
+            • <span class="command">LM Studio: Run Planner Smoke Test (Debug Only)</span> - Validate the planner loop with read-only tools only
         </p>
+
+        <div class="step">
+            <div class="step-number">Planner Shortcuts</div>
+            <p>You can override the default planner setting per request:</p>
+            <ul>
+                <li><strong>/plan</strong> forces planner mode for that one prompt</li>
+                <li><strong>/noplan</strong> forces direct mode for that one prompt</li>
+                <li>If neither prefix is present, the extension uses the saved <code>lmstudio.planner.enabled</code> setting</li>
+            </ul>
+            <p>These prefixes are stripped before the request is sent to the model, so they act as local routing hints rather than part of the prompt content.</p>
+        </div>
 
         <h2>🫤 Troubleshooting</h2>
 
@@ -263,6 +321,8 @@ function getDocumentationContent(): string {
                 <li><strong>Connection refused:</strong> Make sure LM Studio server is running</li>
                 <li><strong>No models available:</strong> Load a model in LM Studio's Local Server tab</li>
                 <li><strong>Weird response formatting:</strong> The extension now filters out model artifacts automatically</li>
+                <li><strong>Planner parse warning on the first round:</strong> Some local models need one retry before they emit valid structured output. If the planner later executes a tool and reaches the sentinel, that warning is recoverable.</li>
+                <li><strong>Need planner mode only sometimes?:</strong> Use <code>/plan</code> or <code>/noplan</code> at the start of the prompt instead of changing the global planner setting back and forth.</li>
                 <li><strong>Slow responses:</strong> Try a smaller model or check your system resources</li>
                 <li><strong>Ideal Context Size:</strong> I've found context size of 128K tokens for my use cases, but YMMV</li>
                 <li><strong>LM Studio Context Size Errors:</strong> Increase context size in LM Studio for the selected model</li>
@@ -306,6 +366,37 @@ function getDocumentationContent(): string {
             <p>The individual feature settings are off by default. Enable verbose logging as well if you want to confirm when these request-time paths are active.</p>
             <p>When context must be shortened, the chat window will show a notice. If the request is still too large, the extension can block it locally and report the current context size returned by LM Studio.</p>
             <p>Enable these features in VS Code Settings (Ctrl+,) by searching for "LM Studio" and setting the appropriate options to true.</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Model Tuning</div>
+            <p>A dedicated <strong>Model Tuning</strong> subsection is available in VS Code Settings for global sampling overrides. Each value only applies when its matching enable checkbox is turned on.</p>
+            <ul>
+                <li><strong>Temperature:</strong> opt-in override from 0.0 to 1.0</li>
+                <li><strong>Top-P / Top-K / Min-P:</strong> opt-in sampling overrides applied to every request</li>
+                <li><strong>Repetition Penalty:</strong> opt-in repeat penalty override</li>
+                <li><strong>Max Tokens in Response:</strong> opt-in global cap for generated output length</li>
+            </ul>
+            <p>If you enable the planner, these same tuning overrides are reused for planner rounds as well.</p>
+            <p>Enable verbose logging or verbose progress reporting if you want the extension to explicitly log which tuning overrides were active for a given request.</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Planner Mode</div>
+            <p>Planner mode is an advanced feature that routes requests through a ReAct-style loop before returning a final answer.</p>
+            <ul>
+                <li><strong>Enable:</strong> <code>lmstudio.planner.enabled</code></li>
+                <li><strong>Iterations:</strong> cap the loop with <code>lmstudio.planner.maxIterations</code></li>
+                <li><strong>Tool Result Budget:</strong> control how much tool output is carried forward with <code>lmstudio.planner.maxToolResultTokens</code></li>
+                <li><strong>Extra Instructions:</strong> optionally inject a file with <code>lmstudio.planner.fyiInstructionPath</code></li>
+            </ul>
+            <p><strong>What it does:</strong> planner mode lets the extension inspect the workspace before answering. It can read files, search the workspace, write files, apply edits, and run selected VS Code commands as part of a local planning loop.</p>
+            <p>When planner mode runs, the chat transcript shows planner tool activity live when tools are used, followed by a short planner summary that explains how many rounds were used and whether any workspace tools actually ran.</p>
+            <p>When verbose progress reporting is enabled, the status bar shows <code>Planner running...</code> with prompt progress and, during generation, an estimated tokens-per-second indicator instead of raw iteration counts.</p>
+            <p><strong>What it does not do:</strong> it does not open a dedicated Copilot-style plan pane, it does not expose VS Code chat tools directly to the model, and it does not guarantee that the model will successfully edit files. The planner may still decide no change is needed or stop after reaching the configured iteration cap.</p>
+            <p>The debug-only smoke test command does <strong>not</strong> exercise planner mode. It forces a safe direct request and expects the exact sentinel response <code>SMOKE_TEST_OK</code>.</p>
+            <p>The separate planner smoke test command exercises planner mode with a read-only tool allow-list and expects the exact sentinel response <code>PLANNER_SMOKE_TEST_OK</code>.</p>
+            <p>Both debug commands have now been validated against a live LM Studio host. The current output already logs planner iterations, tool calls, and sentinel matching, so extra planner telemetry is optional rather than required.</p>
         </div>
 
         <div class="success">

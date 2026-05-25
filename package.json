@@ -10,7 +10,7 @@
 		"type": "git",
 		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.5.1",
+	"version": "0.5.6",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -54,11 +54,22 @@
 				"command": "lmstudio.showDocumentation",
 				"title": "Show Documentation",
 				"category": "LM Studio"
+			},
+			{
+				"command": "lmstudio.runSmokeTest",
+				"title": "Run Smoke Test (Debug Only)",
+				"category": "LM Studio"
+			},
+			{
+				"command": "lmstudio.runPlannerSmokeTest",
+				"title": "Run Planner Smoke Test (Debug Only)",
+				"category": "LM Studio"
 			}
 		],
-		"configuration": {
-			"title": "LM Studio",
-			"properties": {
+		"configuration": [
+			{
+				"title": "LM Studio",
+				"properties": {
 				"lmstudio.baseUrl": {
 					"type": "string",
 					"default": "ws://localhost:1234",
@@ -139,9 +150,123 @@
 					"default": false,
 					"description": "💯 Toggle all currently implemented performance features on or off at once.",
 					"scope": "application"
+				},
+				"lmstudio.planner.enabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "🧠 Enable the planning agent. When enabled, requests are routed through a ReAct-style planner that can use tools (file read/write, workspace search, VS Code commands) before returning a final answer.",
+					"scope": "application"
+				},
+				"lmstudio.planner.maxIterations": {
+					"type": "number",
+					"default": 10,
+					"minimum": 1,
+					"maximum": 50,
+					"description": "🔄 Maximum number of planning iterations (tool call → execute → feed back) before returning a result.",
+					"scope": "application"
+				},
+				"lmstudio.planner.maxToolResultTokens": {
+					"type": "number",
+					"default": 8000,
+					"minimum": 1000,
+					"description": "📏 Maximum token budget for individual tool result content fed back into context.",
+					"scope": "application"
+				},
+				"lmstudio.planner.fyiInstructionPath": {
+					"type": "string",
+					"default": "",
+					"description": "📄 Absolute path to an FYI instruction file to inject into the agent's system prompt before planning begins. Leave empty to skip injection.",
+					"scope": "application"
+				}
+				}
+			},
+			{
+				"title": "LM Studio > Model Tuning",
+				"properties": {
+					"lmstudio.modelTuning.temperature.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global temperature override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.temperature.value": {
+						"type": "number",
+						"default": 0.7,
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Temperature override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topP.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global top-p override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topP.value": {
+						"type": "number",
+						"default": 0.8,
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Top-p override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topK.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global top-k override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topK.value": {
+						"type": "number",
+						"default": 20,
+						"minimum": 1,
+						"description": "Top-k override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.minP.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global min-p override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.minP.value": {
+						"type": "number",
+						"default": 0.05,
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Min-p override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.repetitionPenalty.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global repetition penalty override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.repetitionPenalty.value": {
+						"type": "number",
+						"default": 1.2,
+						"minimum": 0,
+						"description": "Repetition penalty override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.maxTokensInResponse.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global max tokens in response override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.maxTokensInResponse.value": {
+						"type": "number",
+						"default": 4096,
+						"minimum": 1,
+						"description": "Maximum generated tokens to allow in a response. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					}
 				}
 			}
-		}
+		]
 	},
 	"main": "./out/extension.js",
 	"scripts": {

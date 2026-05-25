@@ -60,6 +60,12 @@ These instructions guide the AI agent on coding style, design philosophy, and be
 4. **Configuration-Driven Features**: Make all enhanced features configurable via VS Code settings
 5. **Performance Optimization Features**: Implement toggleable performance optimizations including token budgeting, auto-caveman prompts, and rolling summaries that can be enabled/disabled through VS Code settings to allow users to test and compare performance impact
 
+### Planner Mode Documentation Expectations
+1. **What Planner Mode Does**: User-facing docs should explain that planner mode routes a request through a local planning loop that can inspect the workspace and use the extension's built-in tools before returning a final answer
+2. **What Planner Mode Does Not Do**: User-facing docs should explicitly state that planner mode does not create a dedicated Copilot-style plan pane, does not expose VS Code chat tools directly to the model, and does not guarantee a successful file edit
+3. **Planner Telemetry**: When documenting planner progress, note that verbose progress reporting can show `Planner running...` with prompt progress and tokens-per-second while the planner is active
+4. **Consistency Across Surfaces**: Keep README, Architecture.md, and the extension's Documentation window aligned whenever planner mode behavior or wording changes
+
 ### Testing Considerations
 1. **Local Environment Testing**: Always test with actual LM Studio instances to verify functionality
 2. **Model Context Verification**: Verify that context length metadata accurately reflects loaded models

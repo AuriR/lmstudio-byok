@@ -2,8 +2,11 @@ import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { CancellationToken, LanguageModelChatMessageRole, LanguageModelChatTool, LanguageModelChatToolMode, LanguageModelTextPart, LanguageModelToolCallPart, LanguageModelToolResultPart, LanguageModelDataPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, StatusBarAlignment, StatusBarItem, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
+import { CancellationToken, CancellationTokenSource, LanguageModelChatMessageRole, LanguageModelChatTool, LanguageModelChatToolMode, LanguageModelTextPart, LanguageModelToolCallPart, LanguageModelToolResultPart, LanguageModelDataPart, Progress, workspace, ConfigurationChangeEvent, EventEmitter, window, OutputChannel, StatusBarAlignment, StatusBarItem, LanguageModelChatProvider, LanguageModelChatInformation, LanguageModelChatRequestMessage, LanguageModelResponsePart, ProvideLanguageModelChatResponseOptions } from "vscode";
 import { LMStudioClient } from '@lmstudio/sdk';
+import { createPlanner } from './planner/plan';
+import { DefaultToolRegistry } from './planner/tools';
+import { PlannerConfig, LmStudioMessage as PlannerLmStudioMessage } from './planner/types';
 import { encode } from 'gpt-tokenizer';
 
 function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxOutputTokens: number, supportsTools = true, supportsImageInput = false): LanguageModelChatInformation {
@@ -28,12 +31,237 @@ function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxO
 const textDecoder = new TextDecoder();
 
 const userRequestPattern = /<userRequest>([\s\S]*?)<\/userRequest>/i;
+const plannerOverridePattern = /^(\s*Latest user request:\s*\r?\n)?\s*\/(plan|noplan)\b(?:[ \t]+|\r?\n+)?/i;
 const DEFAULT_MAX_TOOL_RESULT_TOKENS = 8000;
 const DEFAULT_CONTEXT_OVERFLOW_POLICY = 'truncateMiddle';
 const CONTEXT_BUDGET_RECENT_MESSAGE_COUNT = 4;
 const MIN_MESSAGE_TEXT_BUDGET_TOKENS = 128;
+const DEFAULT_BASE_URL = 'ws://localhost:1234';
+const DEFAULT_TEMPERATURE = 0.7;
+const DEFAULT_TOP_P = 0.8;
+const DEFAULT_TOP_K = 20;
+const DEFAULT_MIN_P = 0.05;
+const DEFAULT_REPETITION_PENALTY = 1.2;
+const DEFAULT_MAX_RESPONSE_TOKENS = 4096;
 
 type ContextOverflowPolicy = 'stopAtLimit' | 'truncateMiddle' | 'rollingWindow';
+type CheckedNumericSetting = { enabled: boolean; value: number; };
+type ModelTuningSettings = {
+	temperature: CheckedNumericSetting;
+	topP: CheckedNumericSetting;
+	topK: CheckedNumericSetting;
+	minP: CheckedNumericSetting;
+	repetitionPenalty: CheckedNumericSetting;
+	maxTokensInResponse: CheckedNumericSetting;
+};
+type PredictionOptions = {
+	maxTokens: number;
+	rawTools: ReturnType<typeof toLmStudioRawTools>;
+	contextOverflowPolicy: ContextOverflowPolicy;
+	temperature?: number;
+	topPSampling?: number | false;
+	topKSampling?: number;
+	minPSampling?: number | false;
+	repeatPenalty?: number | false;
+};
+type GeneratedContentFilterState = {
+	skipThinkMode: boolean;
+};
+type PlannerRuntimeStatus = {
+	percent?: number;
+	processedTokens?: number;
+	totalTokens?: number;
+	tokensPerSecond?: number;
+};
+type DebugSmokeTestResult = {
+	success: boolean;
+	modelId?: string;
+	baseUrl: string;
+	visibleText: string;
+	toolCalls: string[];
+	hadStructuredMarkers: boolean;
+	configuredPlannerEnabled: boolean;
+	plannerExercised: boolean;
+	forcedDirectMode: boolean;
+	error?: string;
+};
+
+type DebugPlannerSmokeTestResult = {
+	success: boolean;
+	modelId?: string;
+	baseUrl: string;
+	configuredPlannerEnabled: boolean;
+	plannerExercised: boolean;
+	allowedTools: string[];
+	iterations: number;
+	toolCalls: string[];
+	response: string;
+	matchedSentinel: boolean;
+	error?: string;
+};
+
+type PlannerModeOverride = 'plan' | 'noplan';
+
+const SMOKE_TEST_SENTINEL = 'SMOKE_TEST_OK';
+const PLANNER_SMOKE_TEST_SENTINEL = 'PLANNER_SMOKE_TEST_OK';
+const READ_ONLY_PLANNER_SMOKE_TEST_TOOLS = ['search_workspace', 'read_file'];
+const DEBUG_SMOKE_TEST_MODEL_PREFERENCE = [
+	'openai/gpt-oss-20b',
+	'google/gemma-4-e4b',
+	'qwen/qwen3.6-35b-a3b',
+	'qwen/qwen3-coder-30b',
+];
+
+function pickPreferredItemByIdentifier<T extends { id?: string; identifier?: string; }>(items: T[]): T | undefined {
+	// Smoke tests are only useful when the selected model can follow a tiny structured instruction.
+	// Prefer models that have been more cooperative during local validation before falling back.
+	for (const preferredId of DEBUG_SMOKE_TEST_MODEL_PREFERENCE) {
+		const match = items.find(item => item.id === preferredId || item.identifier === preferredId);
+		if (match) {
+			return match;
+		}
+	}
+
+	return items[0];
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
+}
+
+function createDefaultModelTuningSettings(): ModelTuningSettings {
+	return {
+		temperature: { enabled: false, value: DEFAULT_TEMPERATURE },
+		topP: { enabled: false, value: DEFAULT_TOP_P },
+		topK: { enabled: false, value: DEFAULT_TOP_K },
+		minP: { enabled: false, value: DEFAULT_MIN_P },
+		repetitionPenalty: { enabled: false, value: DEFAULT_REPETITION_PENALTY },
+		maxTokensInResponse: { enabled: false, value: DEFAULT_MAX_RESPONSE_TOKENS },
+	};
+}
+
+function inferImageInputSupport(modelIdentifier: string): boolean {
+	const normalizedIdentifier = modelIdentifier.toLowerCase();
+
+	// Prefer explicit multimodal markers over broad family names. Advertising image input
+	// for every Qwen/Llama/Gemma model causes false capability claims in the picker.
+	if (normalizedIdentifier.includes('llava') ||
+		normalizedIdentifier.includes('cogvlm') ||
+		normalizedIdentifier.includes('pixtral') ||
+		normalizedIdentifier.includes('minicpm-v')) {
+		return true;
+	}
+
+	return /(^|[\/_\-.])(vl|vision|image|multimodal)([\/_\-.]|$)/i.test(normalizedIdentifier);
+}
+
+function filterGeneratedFragmentContent(content: string, state: GeneratedContentFilterState): string | undefined {
+	// Some models emit hidden reasoning or Copilot-style channel markers. The chat UI should only
+	// receive the final visible text, and planner mode needs the same sanitization to parse JSON.
+	if (content === '<think>' || content === '<|channel|>analysis<|message|>' || content === '<|channel|>analysis') {
+		state.skipThinkMode = true;
+		return undefined;
+	}
+
+	if (content === '</think>' || content === '<|end|>') {
+		state.skipThinkMode = false;
+		return undefined;
+	}
+
+	if (state.skipThinkMode) {
+		return undefined;
+	}
+
+	if (content === '<|channel|>final<|message|>' ||
+		content === '<|channel|>final' ||
+		content === '<|message|>' ||
+		content === '<|start|>assistant' ||
+		content === '<|constrain|>JSON') {
+		return undefined;
+	}
+
+	return content.length > 0 ? content : undefined;
+}
+
+function formatPlannerResponseForChat(
+	planningResult: { response: string; toolCalls: Array<{ tool: string }>; iterations: number; success: boolean; error?: string; },
+	maxIterations: number,
+): string {
+	const uniqueTools = Array.from(new Set(planningResult.toolCalls.map(toolCall => toolCall.tool)));
+	const summaryLines = [
+		`Planner summary: completed in ${planningResult.iterations} of ${maxIterations} allowed rounds.`,
+		uniqueTools.length > 0
+			? `Planner actions: ${uniqueTools.join(', ')}.`
+			: 'Planner actions: none. The model answered without using workspace tools.',
+	];
+
+	if (!planningResult.success && planningResult.error) {
+		summaryLines.push(`Planner note: ${planningResult.error}`);
+	}
+
+	const visibleResponse = planningResult.response.trim();
+	if (!visibleResponse) {
+		summaryLines.push('Planner note: no visible answer was produced.');
+		return summaryLines.join('\n');
+	}
+
+	return `${summaryLines.join('\n')}\n\n${visibleResponse}`;
+}
+
+function formatPlannerRunningStatus(
+	percent?: number,
+	tokensPerSecond?: number,
+	processedTokens?: number,
+	totalTokens?: number,
+): string {
+	const details: string[] = [];
+	if (typeof percent === 'number' && Number.isFinite(percent) && percent >= 0) {
+		const boundedPercent = Math.max(0, Math.min(100, Math.round(percent)));
+		if (
+			typeof processedTokens === 'number' && Number.isFinite(processedTokens) && processedTokens >= 0 &&
+			typeof totalTokens === 'number' && Number.isFinite(totalTokens) && totalTokens > 0
+		) {
+			details.push(`${boundedPercent}% (~${Math.min(Math.round(processedTokens), Math.round(totalTokens))}/${Math.round(totalTokens)} tok)`);
+		} else {
+			details.push(`${boundedPercent}%`);
+		}
+	}
+
+	if (typeof tokensPerSecond === 'number' && Number.isFinite(tokensPerSecond) && tokensPerSecond > 0) {
+		details.push(`~${Math.max(0, Math.round(tokensPerSecond))} t/s`);
+	}
+
+	return details.length > 0
+		? `Planner running... ${details.join(' | ')}`
+		: 'Planner running...';
+}
+
+function summarizePlannerToolResultForChat(result: string, success: boolean | undefined): string {
+	const normalized = result.trim();
+	const shortened = normalized.length > 600
+		? `${normalized.slice(0, 600)}\n\n[Planner transcript truncated for chat readability.]`
+		: normalized;
+
+	if (!shortened) {
+		return success === false
+			? 'Planner tool finished with no visible output and reported an error.'
+			: 'Planner tool finished with no visible output.';
+	}
+
+	return shortened;
+}
+
+function formatPlannerToolCallForChat(toolName: string, toolInput: Record<string, unknown> | undefined): string {
+	const serializedInput = toolInput && Object.keys(toolInput).length > 0
+		? JSON.stringify(toolInput)
+		: '{}';
+	return `Planner action: ${toolName} ${serializedInput}`;
+}
+
+function formatPlannerToolResultForChat(result: string, success: boolean | undefined): string {
+	const status = success === false ? 'Planner result (error):' : 'Planner result:';
+	return `${status}\n${summarizePlannerToolResultForChat(result, success)}`;
+}
 
 function estimateTokenCount(text: string): number {
 	try {
@@ -308,6 +536,62 @@ function truncateLmStudioMessageText(message: LmStudioMessage, maxTokens: number
 	} as LmStudioMessage;
 }
 
+function toPlannerLmStudioMessage(message: LmStudioMessage): PlannerLmStudioMessage {
+	return {
+		role: message.role,
+		content: getLmStudioMessageText(message) ?? JSON.stringify(message.content),
+	};
+}
+
+function extractPlannerModeOverride(text: string | undefined): { cleanedText: string | undefined; override?: PlannerModeOverride; } {
+	if (!text) {
+		return { cleanedText: text };
+	}
+
+	const match = plannerOverridePattern.exec(text);
+	if (!match) {
+		return { cleanedText: text };
+	}
+
+	const prefix = match[1] ?? '';
+	const override = match[2].toLowerCase() as PlannerModeOverride;
+	const cleanedText = `${prefix}${text.slice(match[0].length)}`.replace(/^\s+$/g, '').trimStart();
+
+	return {
+		cleanedText,
+		override,
+	};
+}
+
+function applyPlannerModeOverrideToChatHistory(chatHistory: LmStudioChatHistory): { chatHistory: LmStudioChatHistory; override?: PlannerModeOverride; } {
+	const lastUserIndex = [...chatHistory.messages]
+		.map((message, index) => ({ message, index }))
+		.reverse()
+		.find(entry => entry.message.role === 'user' && isTextOnlyLmStudioMessage(entry.message))?.index;
+
+	if (lastUserIndex === undefined) {
+		return { chatHistory };
+	}
+
+	const lastUserMessage = chatHistory.messages[lastUserIndex];
+	const text = getLmStudioMessageText(lastUserMessage);
+	const { cleanedText, override } = extractPlannerModeOverride(text);
+	if (!override || cleanedText === text) {
+		return { chatHistory, override };
+	}
+
+	const updatedMessages = [...chatHistory.messages];
+	updatedMessages[lastUserIndex] = {
+		role: 'user',
+		content: cleanedText ? [{ type: 'text', text: cleanedText }] : [],
+	};
+
+	return {
+		chatHistory: { messages: updatedMessages },
+		override,
+	};
+}
+
 function enforceHistoryTokenBudget(
 	chatHistory: LmStudioChatHistory,
 	rawTools: ReturnType<typeof toLmStudioRawTools>,
@@ -421,6 +705,8 @@ function enforceHistoryTokenBudget(
 }
 
 export class LMStudioChatModelProvider implements LanguageModelChatProvider {
+	private static readonly PROGRESS_STATUS_MIN_UPDATE_INTERVAL_MS = 400;
+
 	private client: LMStudioClient | null = null;
 	private lastBaseUrl: string | null = null;
 	private lastApiKey: string | null = null;
@@ -431,6 +717,10 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private output: OutputChannel;
 	private readonly statusBar: StatusBarItem;
 	private statusBarHideTimer: NodeJS.Timeout | undefined;
+	private progressStatusTimer: NodeJS.Timeout | undefined;
+	private pendingProgressStatusText: string | undefined;
+	private lastProgressStatusText = '';
+	private lastProgressStatusUpdateAt = 0;
 	private readonly chaChingSoundPath: string;
 	private verbose = false;
 	private verboseProgress = false;
@@ -442,6 +732,11 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private tokenBudgeting = false;
 	private contextOverflowPolicy: ContextOverflowPolicy = DEFAULT_CONTEXT_OVERFLOW_POLICY;
 	private blockOversizedRequests = true;
+	private plannerEnabled = false;
+	private plannerMaxIterations = 10;
+	private plannerMaxToolResultTokens = DEFAULT_MAX_TOOL_RESULT_TOKENS;
+	private plannerFyiInstructionPath = '';
+	private modelTuning: ModelTuningSettings = createDefaultModelTuningSettings();
 	private cacheHits = 0;
 	private cacheMisses = 0;
 	private readonly requestSignatureCounts = new Map<string, number>();
@@ -475,7 +770,9 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				e.affectsConfiguration('lmstudio.contextOverflowPolicy') ||
 				e.affectsConfiguration('lmstudio.blockOversizedRequests') ||
 				e.affectsConfiguration('lmstudio.performanceOptimizations') ||
-				e.affectsConfiguration('lmstudio.toggleAllPerformance')) {
+				e.affectsConfiguration('lmstudio.toggleAllPerformance') ||
+				e.affectsConfiguration('lmstudio.planner') ||
+				e.affectsConfiguration('lmstudio.modelTuning')) {
 				this.log('Configuration changed, will refresh client on next request');
 				this.loadSettings();
 				// Reset the client so it gets recreated with new settings
@@ -517,6 +814,36 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			}
 			
 			this.toggleAllPerformance = toggleAll;
+			this.plannerEnabled = !!config.get<boolean>('planner.enabled');
+			this.plannerMaxIterations = Math.max(1, Math.min(50, Math.floor(config.get<number>('planner.maxIterations', 10))));
+			this.plannerMaxToolResultTokens = Math.max(1000, Math.floor(config.get<number>('planner.maxToolResultTokens', DEFAULT_MAX_TOOL_RESULT_TOKENS)));
+			this.plannerFyiInstructionPath = config.get<string>('planner.fyiInstructionPath', '').trim();
+			this.modelTuning = {
+				temperature: {
+					enabled: !!config.get<boolean>('modelTuning.temperature.enabled'),
+					value: clampNumber(config.get<number>('modelTuning.temperature.value', DEFAULT_TEMPERATURE), 0, 1),
+				},
+				topP: {
+					enabled: !!config.get<boolean>('modelTuning.topP.enabled'),
+					value: clampNumber(config.get<number>('modelTuning.topP.value', DEFAULT_TOP_P), 0, 1),
+				},
+				topK: {
+					enabled: !!config.get<boolean>('modelTuning.topK.enabled'),
+					value: Math.max(1, Math.floor(config.get<number>('modelTuning.topK.value', DEFAULT_TOP_K))),
+				},
+				minP: {
+					enabled: !!config.get<boolean>('modelTuning.minP.enabled'),
+					value: clampNumber(config.get<number>('modelTuning.minP.value', DEFAULT_MIN_P), 0, 1),
+				},
+				repetitionPenalty: {
+					enabled: !!config.get<boolean>('modelTuning.repetitionPenalty.enabled'),
+					value: Math.max(0, config.get<number>('modelTuning.repetitionPenalty.value', DEFAULT_REPETITION_PENALTY)),
+				},
+				maxTokensInResponse: {
+					enabled: !!config.get<boolean>('modelTuning.maxTokensInResponse.enabled'),
+					value: Math.max(1, Math.floor(config.get<number>('modelTuning.maxTokensInResponse.value', DEFAULT_MAX_RESPONSE_TOKENS))),
+				},
+			};
 		} catch {
 			this.verbose = false;
 			this.verboseProgress = false;
@@ -528,6 +855,301 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			this.contextOverflowPolicy = DEFAULT_CONTEXT_OVERFLOW_POLICY;
 			this.blockOversizedRequests = true;
 			this.toggleAllPerformance = false;
+			this.plannerEnabled = false;
+			this.plannerMaxIterations = 10;
+			this.plannerMaxToolResultTokens = DEFAULT_MAX_TOOL_RESULT_TOKENS;
+			this.plannerFyiInstructionPath = '';
+			this.modelTuning = createDefaultModelTuningSettings();
+		}
+	}
+
+	private buildPredictionOptions(options: ProvideLanguageModelChatResponseOptions): PredictionOptions {
+		const configuredMaxTokens = this.modelTuning.maxTokensInResponse.enabled
+			? this.modelTuning.maxTokensInResponse.value
+			: undefined;
+		const predictionOptions: PredictionOptions = {
+			maxTokens: Math.max(1, Math.floor(configuredMaxTokens ?? options.modelOptions?.maxTokens ?? 8192)),
+			rawTools: toLmStudioRawTools(options.tools, options.toolMode),
+			contextOverflowPolicy: this.contextOverflowPolicy,
+		};
+
+		if (this.modelTuning.temperature.enabled) {
+			predictionOptions.temperature = this.modelTuning.temperature.value;
+		}
+
+		if (this.modelTuning.topP.enabled) {
+			predictionOptions.topPSampling = this.modelTuning.topP.value;
+		}
+
+		if (this.modelTuning.topK.enabled) {
+			predictionOptions.topKSampling = this.modelTuning.topK.value;
+		}
+
+		if (this.modelTuning.minP.enabled) {
+			predictionOptions.minPSampling = this.modelTuning.minP.value;
+		}
+
+		if (this.modelTuning.repetitionPenalty.enabled) {
+			predictionOptions.repeatPenalty = this.modelTuning.repetitionPenalty.value;
+		}
+
+		return predictionOptions;
+	}
+
+	private describeActiveModelTuning(predictionOptions: PredictionOptions): string {
+		const activeSettings: string[] = [];
+
+		if (predictionOptions.temperature !== undefined) {
+			activeSettings.push(`temperature=${predictionOptions.temperature}`);
+		}
+
+		if (predictionOptions.topPSampling !== undefined) {
+			activeSettings.push(`topP=${predictionOptions.topPSampling}`);
+		}
+
+		if (predictionOptions.topKSampling !== undefined) {
+			activeSettings.push(`topK=${predictionOptions.topKSampling}`);
+		}
+
+		if (predictionOptions.minPSampling !== undefined) {
+			activeSettings.push(`minP=${predictionOptions.minPSampling}`);
+		}
+
+		if (predictionOptions.repeatPenalty !== undefined) {
+			activeSettings.push(`repetitionPenalty=${predictionOptions.repeatPenalty}`);
+		}
+
+		if (this.modelTuning.maxTokensInResponse.enabled) {
+			activeSettings.push(`maxResponseTokens=${predictionOptions.maxTokens}`);
+		}
+
+		return activeSettings.length > 0 ? activeSettings.join(', ') : 'none';
+	}
+
+	private getPlannerConfig(): PlannerConfig {
+		return {
+			enabled: this.plannerEnabled,
+			maxIterations: this.plannerMaxIterations,
+			maxToolResultTokens: this.plannerMaxToolResultTokens,
+			useToolCalling: false,
+			fyiInstructionPath: this.plannerFyiInstructionPath || undefined,
+			modelFamily: 'lmstudio',
+			allowedTools: undefined,
+		};
+	}
+
+	private getWorkspaceRoot(): string | undefined {
+		return workspace.workspaceFolders?.[0]?.uri.fsPath;
+	}
+
+	private async invokePlannerModel(
+		llmModel: { respond: (history: LmStudioChatHistory, options: Omit<PredictionOptions, 'rawTools'> & Record<string, unknown>) => AsyncIterable<{ content?: string; tokensCount?: number; }> & PromiseLike<{ content?: string; }>; },
+		messages: PlannerLmStudioMessage[],
+		predictionOptions: PredictionOptions,
+		token: CancellationToken,
+		onRuntimeStatus?: (status: PlannerRuntimeStatus) => void,
+	): Promise<string> {
+		const plannerPredictionOptions: Omit<PredictionOptions, 'rawTools'> = {
+			maxTokens: predictionOptions.maxTokens,
+			contextOverflowPolicy: predictionOptions.contextOverflowPolicy,
+			temperature: predictionOptions.temperature,
+			topPSampling: predictionOptions.topPSampling,
+			topKSampling: predictionOptions.topKSampling,
+			minPSampling: predictionOptions.minPSampling,
+			repeatPenalty: predictionOptions.repeatPenalty,
+		};
+		const estimatedPromptTokens = Math.max(1, estimateTokenCount(JSON.stringify(messages)));
+		let lastPromptPercent = -1;
+		let generatedTokens = 0;
+		let firstFragmentTime: number | undefined;
+		let accumulatedResponse = '';
+		const filterState: GeneratedContentFilterState = { skipThinkMode: false };
+		const predictionCallbacks = {
+			onPromptProcessingProgress: (promptProgress: number) => {
+				const percent = Math.max(0, Math.min(100, Math.round(promptProgress * 100)));
+				if (percent === lastPromptPercent) {
+					return;
+				}
+
+				lastPromptPercent = percent;
+				onRuntimeStatus?.({
+					percent,
+					processedTokens: Math.min(estimatedPromptTokens, Math.round(estimatedPromptTokens * promptProgress)),
+					totalTokens: estimatedPromptTokens,
+					tokensPerSecond: undefined,
+				});
+			},
+			onFirstToken: () => {
+				onRuntimeStatus?.({
+					percent: 100,
+					processedTokens: estimatedPromptTokens,
+					totalTokens: estimatedPromptTokens,
+					tokensPerSecond: undefined,
+				});
+			},
+		};
+		const prediction = llmModel.respond(
+			{ messages: messages as unknown as LmStudioMessage[] },
+			{ ...plannerPredictionOptions, ...predictionCallbacks },
+		);
+
+		for await (const fragment of prediction) {
+			if (token.isCancellationRequested) {
+				void Promise.resolve(prediction).catch(() => undefined);
+				break;
+			}
+
+			generatedTokens += Math.max(0, fragment.tokensCount || 0);
+
+			if (fragment.content) {
+				if (firstFragmentTime === undefined) {
+					firstFragmentTime = Date.now();
+				}
+
+				const filteredContent = filterGeneratedFragmentContent(fragment.content, filterState);
+				if (filteredContent) {
+					accumulatedResponse += filteredContent;
+				}
+
+				if (firstFragmentTime !== undefined && generatedTokens > 0) {
+					const elapsedSeconds = (Date.now() - firstFragmentTime) / 1000;
+					if (elapsedSeconds > 0) {
+						onRuntimeStatus?.({
+							percent: 100,
+							processedTokens: estimatedPromptTokens,
+							totalTokens: estimatedPromptTokens,
+							tokensPerSecond: Math.floor(generatedTokens / elapsedSeconds),
+						});
+					}
+				}
+			}
+		}
+
+		if (token.isCancellationRequested) {
+			return accumulatedResponse.trim();
+		}
+
+		const finalResult = await prediction;
+		if (!accumulatedResponse && finalResult.content) {
+			const filteredFinalContent = filterGeneratedFragmentContent(finalResult.content, filterState);
+			if (filteredFinalContent) {
+				accumulatedResponse = filteredFinalContent;
+			}
+		}
+
+		return accumulatedResponse.trim();
+	}
+
+	private async providePlannerResponse(
+		llmModel: { identifier: string; respond: (history: LmStudioChatHistory, options: Omit<PredictionOptions, 'rawTools'> & Record<string, unknown>) => AsyncIterable<{ content?: string; tokensCount?: number; }> & PromiseLike<{ content?: string; }>; },
+		processedChatHistory: LmStudioChatHistory,
+		predictionOptions: PredictionOptions,
+		progress: Progress<LanguageModelResponsePart>,
+		token: CancellationToken,
+	): Promise<void> {
+		const plannerConfig = this.getPlannerConfig();
+		let plannerRuntimeStatus: PlannerRuntimeStatus = {};
+		let emittedPlannerRunningNote = false;
+		const showPlannerRunningStatus = () => {
+			this.showProgressStatus(formatPlannerRunningStatus(
+				plannerRuntimeStatus.percent,
+				plannerRuntimeStatus.tokensPerSecond,
+				plannerRuntimeStatus.processedTokens,
+				plannerRuntimeStatus.totalTokens,
+			));
+		};
+		const ensurePlannerRunningNote = () => {
+			if (emittedPlannerRunningNote) {
+				return;
+			}
+
+			emittedPlannerRunningNote = true;
+			progress.report(new LanguageModelTextPart('Planner running...\n\n'));
+		};
+		const planner = createPlanner(
+			plannerConfig,
+			{
+				workspaceRoot: this.getWorkspaceRoot(),
+				outputChannel: this.output,
+				token,
+				onProgress: (plannerProgress) => {
+					if (plannerProgress.type === 'iteration' && plannerProgress.iteration !== undefined) {
+						ensurePlannerRunningNote();
+						if (typeof plannerProgress.percent === 'number' && Number.isFinite(plannerProgress.percent)) {
+							plannerRuntimeStatus = {
+								...plannerRuntimeStatus,
+								percent: plannerProgress.percent,
+							};
+						}
+						showPlannerRunningStatus();
+						return;
+					}
+
+					if (plannerProgress.type === 'toolCall' && plannerProgress.toolName) {
+						ensurePlannerRunningNote();
+						if (typeof plannerProgress.percent === 'number' && Number.isFinite(plannerProgress.percent)) {
+							plannerRuntimeStatus = {
+								...plannerRuntimeStatus,
+								percent: plannerProgress.percent,
+							};
+						}
+						showPlannerRunningStatus();
+						progress.report(new LanguageModelTextPart(`${formatPlannerToolCallForChat(plannerProgress.toolName, plannerProgress.toolInput)}\n\n`));
+						return;
+					}
+
+					if (plannerProgress.type === 'toolResult') {
+						ensurePlannerRunningNote();
+						progress.report(new LanguageModelTextPart(`${formatPlannerToolResultForChat(plannerProgress.toolResult ?? '', plannerProgress.toolSuccess)}\n\n`));
+						return;
+						showPlannerRunningStatus();
+					}
+
+					if (plannerProgress.type === 'complete') {
+						this.showProgressStatus('Planner finalizing...');
+					}
+				},
+			},
+			this.output,
+		);
+
+		const lastMessage = processedChatHistory.messages.at(-1);
+		const plannerPrompt = lastMessage
+			? getLmStudioMessageText(lastMessage) ?? JSON.stringify(lastMessage.content)
+			: 'Continue assisting with the latest request.';
+		const plannerHistory = (lastMessage?.role === 'user'
+			? processedChatHistory.messages.slice(0, -1)
+			: processedChatHistory.messages
+		).map(toPlannerLmStudioMessage);
+		const activeTuningSummary = this.describeActiveModelTuning(predictionOptions);
+
+		this.log(`Routing request through planner for model ${llmModel.identifier} with maxIterations=${plannerConfig.maxIterations}`);
+		this.log(`Active model tuning for planner request: ${activeTuningSummary}`);
+		this.maybeLogProgress(`planner request tuning: ${activeTuningSummary}`);
+		const planningResult = await planner.plan(
+			plannerPrompt,
+			plannerHistory,
+			async (plannerMessages) => this.invokePlannerModel(
+				llmModel,
+				plannerMessages,
+				predictionOptions,
+				token,
+				(status) => {
+					plannerRuntimeStatus = status;
+					showPlannerRunningStatus();
+				},
+			),
+			token,
+		);
+
+		ensurePlannerRunningNote();
+		progress.report(new LanguageModelTextPart(formatPlannerResponseForChat(planningResult, plannerConfig.maxIterations)));
+
+		this.log(`Planner completed success=${planningResult.success} iterations=${planningResult.iterations} toolCalls=${planningResult.toolCalls.length}`);
+		if (planningResult.success) {
+			this.showCompletedStatus('Planner complete');
+		} else {
+			this.showCompletedStatus('Planner stopped');
 		}
 	}
 
@@ -546,6 +1168,14 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		console.error(`LM Studio: ${msg}`, err);
 	}
 
+	private applyProgressStatusText(spinnerText: string): void {
+		this.pendingProgressStatusText = undefined;
+		this.lastProgressStatusText = spinnerText;
+		this.lastProgressStatusUpdateAt = Date.now();
+		this.statusBar.text = spinnerText;
+		this.statusBar.show();
+	}
+
 	private showProgressStatus(text: string): void {
 		if (!this.verboseProgress) {
 			return;
@@ -555,8 +1185,34 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			clearTimeout(this.statusBarHideTimer);
 			this.statusBarHideTimer = undefined;
 		}
-		this.statusBar.text = `$(sync~spin) ${text}`;
-		this.statusBar.show();
+
+		const spinnerText = `$(sync~spin) ${text}`;
+		if (spinnerText === this.lastProgressStatusText) {
+			this.statusBar.show();
+			return;
+		}
+
+		const now = Date.now();
+		const elapsedMs = now - this.lastProgressStatusUpdateAt;
+		if (elapsedMs >= LMStudioChatModelProvider.PROGRESS_STATUS_MIN_UPDATE_INTERVAL_MS && !this.progressStatusTimer) {
+			this.applyProgressStatusText(spinnerText);
+			return;
+		}
+
+		this.pendingProgressStatusText = spinnerText;
+		if (this.progressStatusTimer) {
+			return;
+		}
+
+		const remainingMs = Math.max(0, LMStudioChatModelProvider.PROGRESS_STATUS_MIN_UPDATE_INTERVAL_MS - elapsedMs);
+		this.progressStatusTimer = setTimeout(() => {
+			this.progressStatusTimer = undefined;
+			if (!this.pendingProgressStatusText) {
+				return;
+			}
+
+			this.applyProgressStatusText(this.pendingProgressStatusText);
+		}, remainingMs);
 	}
 
 	private showCompletedStatus(text: string, hideAfterMs = 8000): void {
@@ -567,6 +1223,12 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		if (this.statusBarHideTimer) {
 			clearTimeout(this.statusBarHideTimer);
 		}
+		if (this.progressStatusTimer) {
+			clearTimeout(this.progressStatusTimer);
+			this.progressStatusTimer = undefined;
+		}
+		this.pendingProgressStatusText = undefined;
+		this.lastProgressStatusText = `$(check) ${text}`;
 
 		this.statusBar.text = `$(check) ${text}`;
 		this.statusBar.show();
@@ -585,6 +1247,13 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			clearTimeout(this.statusBarHideTimer);
 			this.statusBarHideTimer = undefined;
 		}
+		if (this.progressStatusTimer) {
+			clearTimeout(this.progressStatusTimer);
+			this.progressStatusTimer = undefined;
+		}
+		this.pendingProgressStatusText = undefined;
+		this.lastProgressStatusText = '';
+		this.lastProgressStatusUpdateAt = 0;
 		this.statusBar.hide();
 	}
 
@@ -687,7 +1356,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			const clientOptions: { baseUrl?: string; apiKey?: string } = {};
 
 			// Only set baseUrl if it's not the default localhost:1234
-			if (baseUrl !== 'http://localhost:1234') {
+			if (baseUrl !== DEFAULT_BASE_URL) {
 				clientOptions.baseUrl = baseUrl;
 				this.log(`Using custom base URL: ${baseUrl}`);
 			}
@@ -730,7 +1399,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 		// Fall back to default
 		this.log('Using default base URL');
-		return 'ws://localhost:1234';
+		return DEFAULT_BASE_URL;
 	}
 
 	private getApiKey(): string | null {
@@ -803,29 +1472,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				// Assume tool calling support for loaded models (can be refined later)
 				const supportsTools = true;
 
-				// Detect if model supports image input based on model identifier
-				// Common vision model patterns in LM Studio
-				let supportsImageInput = false;
-				
-				// Check for known vision-capable models by pattern matching
-				if (id.includes('vision') || 
-					id.includes('llava') || 
-					id.includes('qwen') ||
-					id.includes('gemma') ||
-					id.includes('phi') ||
-					id.includes('cogvlm') ||
-					id.includes('minicpm') ||
-					id.includes('llama') ||
-					id.includes('pixtral') ||
-					id.includes('deepseek') ||
-					id.includes('nous-hermes')) {
-					supportsImageInput = true;
-				}
-				
-				// Additional heuristic: if model name contains "image" or "vision" patterns, it's likely vision-capable
-				if (id.toLowerCase().includes('image') || id.toLowerCase().includes('vision')) {
-					supportsImageInput = true;
-				}
+				const supportsImageInput = inferImageInputSupport(id);
 
 				this.log(`Adding loaded model ${id} - Context: ${maxInputTokens}, Image Input: ${supportsImageInput}`);
 
@@ -836,11 +1483,9 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			if (models.length > 0) {
 				this.cachedModels = models;
 				this.cacheTimestamp = now;
-					this.cachedModels = models;
-					this.cacheTimestamp = now;
-					// Notify VS Code that the model list has changed
-					this._onDidChange.fire();
-					return models;
+				// Notify VS Code that the model list has changed
+				this._onDidChange.fire();
+				return models;
 			} else {
 				this.log('No models are currently loaded in LM Studio');
 				const fallbackModels = [
@@ -891,6 +1536,246 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		this._onDidChange.fire();
 	}
 
+	public async runDebugSmokeTest(): Promise<DebugSmokeTestResult> {
+		const baseUrl = this.getBaseUrl();
+		const tokenSource = new CancellationTokenSource();
+		const originalPlannerEnabled = this.plannerEnabled;
+
+		this.output.show(true);
+		this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Starting debug-only smoke test against ${baseUrl}`);
+
+		try {
+			const models = await this.prepareLanguageModelChat({ silent: false }, tokenSource.token);
+			const selectedModel = pickPreferredItemByIdentifier(
+				models.filter(candidate => !['connection-error', 'no-models-loaded', 'server-not-started'].includes(candidate.id)),
+			);
+
+			if (!selectedModel) {
+				return {
+					success: false,
+					baseUrl,
+					visibleText: '',
+					toolCalls: [],
+					hadStructuredMarkers: false,
+					configuredPlannerEnabled: originalPlannerEnabled,
+					plannerExercised: false,
+					forcedDirectMode: true,
+					error: 'No loaded LM Studio model is available for the smoke test.',
+				};
+			}
+
+			const collectedText: string[] = [];
+			const toolCalls: string[] = [];
+			const progressCollector: Progress<LanguageModelResponsePart> = {
+				report: (part: LanguageModelResponsePart) => {
+					if (part instanceof LanguageModelTextPart) {
+						collectedText.push(part.value);
+						return;
+					}
+
+					if (part instanceof LanguageModelToolCallPart) {
+						toolCalls.push(part.name);
+					}
+				},
+			};
+
+			const smokeMessages: LanguageModelChatRequestMessage[] = [
+				{
+					role: LanguageModelChatMessageRole.User,
+					// Keep the prompt intentionally tiny so this command validates transport, sanitization,
+					// and active request settings without becoming a general-purpose chat shortcut.
+					content: [new LanguageModelTextPart(`Debug smoke test. Reply with the exact text ${SMOKE_TEST_SENTINEL} and nothing else.`)],
+					name: 'LM Studio Smoke Test',
+				},
+			];
+
+			// This command intentionally forces direct mode. Planner mode can expose write-capable tools,
+			// which would make a debug smoke test unsafe to run casually in an arbitrary workspace.
+			this.plannerEnabled = false;
+			await this.provideLanguageModelChatResponse(
+				selectedModel,
+				smokeMessages,
+				{ modelOptions: { maxTokens: 48 }, tools: undefined, toolMode: LanguageModelChatToolMode.Auto, requestInitiator: 'lmstudio.debugSmokeTest' },
+				progressCollector,
+				tokenSource.token,
+			);
+
+			const visibleText = collectedText.join('');
+			const normalizedVisibleText = visibleText.trim();
+			const hadStructuredMarkers = /<\|channel\|>|<\|start\|>|<\|end\|>|<think>/i.test(visibleText);
+			const matchedSentinel = normalizedVisibleText === SMOKE_TEST_SENTINEL;
+			const success = matchedSentinel && toolCalls.length === 0 && !hadStructuredMarkers;
+
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Model: ${selectedModel.id}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Model preference order: ${DEBUG_SMOKE_TEST_MODEL_PREFERENCE.join(', ')}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Planner enabled in settings: ${originalPlannerEnabled}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Planner exercised: false (forced direct mode for safety)`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Forced direct mode: true`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Tool calls observed: ${toolCalls.length === 0 ? 'none' : toolCalls.join(', ')}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Structured markers present after filtering: ${hadStructuredMarkers}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Sentinel matched exactly: ${matchedSentinel}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Visible output: ${visibleText || '<empty>'}`);
+
+			return {
+				success,
+				modelId: selectedModel.id,
+				baseUrl,
+				visibleText,
+				toolCalls,
+				hadStructuredMarkers,
+				configuredPlannerEnabled: originalPlannerEnabled,
+				plannerExercised: false,
+				forcedDirectMode: true,
+				error: success ? undefined : `Smoke test expected exact sentinel '${SMOKE_TEST_SENTINEL}' without tools or structured markers.`,
+			};
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Error: ${detail}`);
+			return {
+				success: false,
+				baseUrl,
+				visibleText: '',
+				toolCalls: [],
+				hadStructuredMarkers: false,
+				configuredPlannerEnabled: originalPlannerEnabled,
+				plannerExercised: false,
+				forcedDirectMode: true,
+				error: detail,
+			};
+		} finally {
+			this.plannerEnabled = originalPlannerEnabled;
+			tokenSource.dispose();
+		}
+	}
+
+	public async runDebugPlannerSmokeTest(): Promise<DebugPlannerSmokeTestResult> {
+		const baseUrl = this.getBaseUrl();
+		const tokenSource = new CancellationTokenSource();
+		const originalPlannerEnabled = this.plannerEnabled;
+		const originalPlannerMaxIterations = this.plannerMaxIterations;
+
+		this.output.show(true);
+		this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Starting debug-only planner smoke test against ${baseUrl}`);
+
+		try {
+			const models = await this.prepareLanguageModelChat({ silent: false }, tokenSource.token);
+			const selectedModel = pickPreferredItemByIdentifier(
+				models.filter(candidate => !['connection-error', 'no-models-loaded', 'server-not-started'].includes(candidate.id)),
+			);
+
+			if (!selectedModel) {
+				return {
+					success: false,
+					baseUrl,
+					configuredPlannerEnabled: originalPlannerEnabled,
+					plannerExercised: false,
+					allowedTools: [...READ_ONLY_PLANNER_SMOKE_TEST_TOOLS],
+					iterations: 0,
+					toolCalls: [],
+					response: '',
+					matchedSentinel: false,
+					error: 'No loaded LM Studio model is available for the planner smoke test.',
+				};
+			}
+
+			const client = this.ensureClient();
+			if (!client) {
+				throw new Error('LM Studio client is not available for the planner smoke test.');
+			}
+
+			const loadedModels = await client.llm.listLoaded();
+			const llmModel = loadedModels.find(candidate => candidate.identifier === selectedModel.id)
+				?? pickPreferredItemByIdentifier(loadedModels);
+			if (!llmModel) {
+				throw new Error('No loaded LM Studio runtime model is available for planner smoke test execution.');
+			}
+
+			// The planner smoke test intentionally exposes only read-only tools. This validates the real
+			// planner loop while making it safe to run during code review or in a random workspace.
+			const readOnlyRegistry = new DefaultToolRegistry(READ_ONLY_PLANNER_SMOKE_TEST_TOOLS);
+			const plannerConfig: PlannerConfig = {
+				...this.getPlannerConfig(),
+				enabled: true,
+				maxIterations: Math.max(2, Math.min(4, originalPlannerMaxIterations)),
+				allowedTools: [...READ_ONLY_PLANNER_SMOKE_TEST_TOOLS],
+			};
+			const predictionOptions: PredictionOptions = {
+				...this.buildPredictionOptions({ modelOptions: { maxTokens: 96 }, tools: undefined, toolMode: LanguageModelChatToolMode.Auto, requestInitiator: 'lmstudio.debugPlannerSmokeTest' }),
+				rawTools: { type: 'none' },
+			};
+
+			const planner = createPlanner(
+				plannerConfig,
+				{
+					workspaceRoot: this.getWorkspaceRoot(),
+					outputChannel: this.output,
+					token: tokenSource.token,
+				},
+				this.output,
+				readOnlyRegistry,
+			);
+
+			const planningResult = await planner.plan(
+				[
+					`You must call one of the allowed read-only tools before giving any final answer.`,
+					`First, use search_workspace to look for the exact text LMStudioChatModelProvider.`,
+					`If search_workspace returns a match, you may optionally use read_file on the matched file for confirmation.`,
+					`After at least one successful tool call, return exactly {"response":"${PLANNER_SMOKE_TEST_SENTINEL}"} and nothing else.`,
+				].join(' '),
+				[],
+				async (plannerMessages) => this.invokePlannerModel(llmModel, plannerMessages, predictionOptions, tokenSource.token),
+				tokenSource.token,
+			);
+
+			const matchedSentinel = planningResult.response.trim() === PLANNER_SMOKE_TEST_SENTINEL;
+			const toolCalls = planningResult.toolCalls.map(toolCall => toolCall.tool);
+			const success = planningResult.success && matchedSentinel && toolCalls.length > 0;
+
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Model: ${llmModel.identifier}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Model preference order: ${DEBUG_SMOKE_TEST_MODEL_PREFERENCE.join(', ')}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Planner enabled in settings: ${originalPlannerEnabled}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Planner exercised: true`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Allowed tools: ${READ_ONLY_PLANNER_SMOKE_TEST_TOOLS.join(', ')}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Iterations: ${planningResult.iterations}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Tool calls observed: ${toolCalls.length === 0 ? 'none' : toolCalls.join(', ')}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Sentinel matched exactly: ${matchedSentinel}`);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Final response: ${planningResult.response || '<empty>'}`);
+
+			return {
+				success,
+				modelId: llmModel.identifier,
+				baseUrl,
+				configuredPlannerEnabled: originalPlannerEnabled,
+				plannerExercised: true,
+				allowedTools: [...READ_ONLY_PLANNER_SMOKE_TEST_TOOLS],
+				iterations: planningResult.iterations,
+				toolCalls,
+				response: planningResult.response,
+				matchedSentinel,
+				error: success ? undefined : `Planner smoke test expected at least one read-only tool call and exact sentinel '${PLANNER_SMOKE_TEST_SENTINEL}'.`,
+			};
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Error: ${detail}`);
+			return {
+				success: false,
+				baseUrl,
+				configuredPlannerEnabled: originalPlannerEnabled,
+				plannerExercised: true,
+				allowedTools: [...READ_ONLY_PLANNER_SMOKE_TEST_TOOLS],
+				iterations: 0,
+				toolCalls: [],
+				response: '',
+				matchedSentinel: false,
+				error: detail,
+			};
+		} finally {
+			this.plannerEnabled = originalPlannerEnabled;
+			this.plannerMaxIterations = originalPlannerMaxIterations;
+			tokenSource.dispose();
+		}
+	}
+
 	/**
 	 * Get the list of available language models provided by this provider
 	 */
@@ -934,14 +1819,25 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		// Convert VS Code messages to LM Studio chat format
 		let currentContextLength = model.maxInputTokens;
 		const maxToolResultTokens = Math.max(1200, Math.min(DEFAULT_MAX_TOOL_RESULT_TOKENS, Math.floor(model.maxInputTokens * 0.08)));
-		const chatHistory: LmStudioChatHistory = {
+		const baseChatHistory: LmStudioChatHistory = {
 			messages: messages.map((msg, index) => {
 			const convertedMessage = toLmStudioMessage(msg, maxToolResultTokens);
 			const preview = JSON.stringify(convertedMessage).substring(0, 160);
 			this.log(`Message ${index}: role=${msg.role}->${convertedMessage.role} parts=${msg.content.length} payload=${preview}${preview.length >= 160 ? '...' : ''}`);
 			return convertedMessage;
 			}),
-		};			// Get a model instance - try to get the requested model or use the first available one
+		};
+		const plannerOverrideResult = applyPlannerModeOverrideToChatHistory(baseChatHistory);
+		const chatHistory = plannerOverrideResult.chatHistory;
+		const effectivePlannerEnabled = plannerOverrideResult.override === 'plan'
+			? true
+			: plannerOverrideResult.override === 'noplan'
+				? false
+				: this.plannerEnabled;
+		if (plannerOverrideResult.override) {
+			this.log(`Per-request planner override detected: /${plannerOverrideResult.override} (configured planner.enabled=${this.plannerEnabled})`);
+		}
+			// Get a model instance - try to get the requested model or use the first available one
 			let llmModel;
 			try {
 				if (model.id === "no-models-loaded" || model.id === "connection-error" || model.id === "server-not-started") {
@@ -997,6 +1893,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			let totalTokensPerSecond = 0;
 			let tokenCount = 0;
 			let visibleResponseText = '';
+			const filterState: GeneratedContentFilterState = { skipThinkMode: false };
 
 			// Helper function to flush accumulated content
 			const flushContent = () => {
@@ -1012,12 +1909,10 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				}
 			};
 
-			// Define predictionOptions before using it
-			const predictionOptions = {
-				maxTokens: options.modelOptions?.maxTokens || 8192,
-				rawTools: toLmStudioRawTools(options.tools, options.toolMode),
-				contextOverflowPolicy: this.contextOverflowPolicy,
-			};
+			const predictionOptions = this.buildPredictionOptions(options);
+			const activeTuningSummary = this.describeActiveModelTuning(predictionOptions);
+			this.log(`Active model tuning for request: ${activeTuningSummary}`);
+			this.maybeLogProgress(`request tuning: ${activeTuningSummary}`);
 
 			// Apply auto-caveman prompt reduction if enabled
 			let processedChatHistory = chatHistory;
@@ -1107,6 +2002,13 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 					this.log(`⚠️ Token budget warning: ${totalEstimatedTokens} tokens used, approaching limit of ${contextLimit} tokens`);
 				}
 			}
+
+			// A per-request /plan or /noplan prefix can override the global planner setting for
+			// this single request, which is a better UX fit than flipping the setting back and forth.
+			if (effectivePlannerEnabled) {
+				await this.providePlannerResponse(llmModel, processedChatHistory, predictionOptions, progress, token);
+				return;
+			}
 			
 			// Calculate system prompt size if there are system messages
 			let systemPromptTokens = 0;
@@ -1128,6 +2030,11 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				chatHistory: processedChatHistory,
 				maxTokens: predictionOptions.maxTokens,
 				rawTools: predictionOptions.rawTools,
+				temperature: predictionOptions.temperature,
+				topPSampling: predictionOptions.topPSampling,
+				topKSampling: predictionOptions.topKSampling,
+				minPSampling: predictionOptions.minPSampling,
+				repeatPenalty: predictionOptions.repeatPenalty,
 				contextOverflowPolicy: predictionOptions.contextOverflowPolicy,
 			});
 			const requestObservation = this.recordSignatureObservation(this.requestSignatureCounts, requestSignature);
@@ -1178,7 +2085,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				...predictionCallbacks,
 			};
 
-			this.log(`Invoking respond() with options ${JSON.stringify({ maxTokens: predictionOptions.maxTokens, hasTools: predictionOptions.rawTools.type === 'toolArray', forceTool: predictionOptions.rawTools.type === 'toolArray' ? !!predictionOptions.rawTools.force : false, contextOverflowPolicy: predictionOptions.contextOverflowPolicy })} historyLength=${processedChatHistory.messages.length}`);
+			this.log(`Invoking respond() with options ${JSON.stringify({ maxTokens: predictionOptions.maxTokens, temperature: predictionOptions.temperature, topPSampling: predictionOptions.topPSampling, topKSampling: predictionOptions.topKSampling, minPSampling: predictionOptions.minPSampling, repeatPenalty: predictionOptions.repeatPenalty, hasTools: predictionOptions.rawTools.type === 'toolArray', forceTool: predictionOptions.rawTools.type === 'toolArray' ? !!predictionOptions.rawTools.force : false, contextOverflowPolicy: predictionOptions.contextOverflowPolicy })} historyLength=${processedChatHistory.messages.length}`);
 			this.log(`Estimated prompt tokens before send: ~${estimatedPromptTokens}`);
 			const prediction = llmModel.respond(processedChatHistory, responseOptions);
 
@@ -1186,6 +2093,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			for await (const fragment of prediction) {
 				if (token.isCancellationRequested) {
 					this.log('Cancellation requested by VS Code token');
+						void Promise.resolve(prediction).catch(() => undefined);
 					break;
 				}
 
@@ -1199,34 +2107,15 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 					const content = fragment.content;
 					fragmentCount++;
-
-					// Handle thinking mode - skip <think> content entirely
-					if (content === '<think>' || content === '<|channel|>analysis<|message|>') {
-						skipThinkMode = true;
-						this.log(`Fragment skipped (start thinking): raw="${content}"`);
-						continue;
-					} else if (content === '</think>' || content === '<|end|>') {
-						skipThinkMode = false;
-						this.log(`Fragment skipped (end thinking): raw="${content}"`);
-						continue;
-					} else if (skipThinkMode) {
-						// Skip all content while in thinking mode
-						this.log(`Fragment skipped (thinking mode): raw="${content}"`);
-						continue;
-					}
-
-					// Skip empty structured tokens
-					if (content === '<|channel|>final<|message|>' ||
-						content === '<|start|>assistant' ||
-						content === '<|end|>') {
-						this.log(`Fragment skipped (empty token): raw="${content}"`);
+					const filteredContent = filterGeneratedFragmentContent(content, filterState);
+					if (!filteredContent) {
 						continue;
 					}
 
 					// Only accumulate non-empty content
-					if (content.length > 0) {
-						visibleResponseText += content;
-						accumulatedContent += content;
+					if (filteredContent.length > 0) {
+						visibleResponseText += filteredContent;
+						accumulatedContent += filteredContent;
 						
 						const now = Date.now();
 						
@@ -1274,6 +2163,10 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 			// Always flush any remaining content at the end
 			flushContent();
+			if (token.isCancellationRequested) {
+				this.showCompletedStatus('LM Studio request cancelled');
+				return;
+			}
 			await prediction;
 			const ended = Date.now();
 			this.log(`Streaming complete fragments=${fragmentCount} chars=${receivedChars} toolCalls=${receivedToolCalls} duration=${ended-started}ms firstFragmentLatency=${firstFragmentTime?firstFragmentTime-started:'n/a'}ms`);
