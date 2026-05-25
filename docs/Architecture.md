@@ -33,6 +33,7 @@
 - 1.7 | 2026-05-24 | Copilot Agent | Added per-request planner overrides and documented routing precedence
 - 1.8 | 2026-05-24 | Copilot Agent | Added LM Studio clarification participant architecture and updated chat flows
 - 1.9 | 2026-05-25 | Copilot Agent | Renamed LM Studio slash commands, changed max-token overrides to session-scoped behavior with reset support, and documented the best-effort token-limit warning path
+- 1.10 | 2026-05-25 3:26 PM | Copilot Agent | Documented centralized shared constants and aligned the architecture notes with the restored slash-command and session-override behavior
 
 ## Executive Overview
 
@@ -287,9 +288,10 @@ flowchart TD
 1. **extension.ts** - Extension activation and provider registration
 2. **provider.ts** - LanguageModelChatProvider implementation
 3. **src/participant.ts** - Chat participant implementation for clarification checkpoints and LM Studio model forwarding
-4. **package.json** - Extension manifest with model and chat-participant contributions plus configuration
-5. **src/planner/plan.ts** - Planner loop, tool-call parsing, and final-response handling
-6. **src/planner/tools.ts** plus **src/planner/tools/** - Barrel exports plus built-in planner tool implementations for workspace interaction
+4. **src/constants.ts** - Centralized shared IDs, settings keys, regex patterns, defaults, and command identifiers used across the extension
+5. **package.json** - Extension manifest with model and chat-participant contributions plus configuration
+6. **src/planner/plan.ts** - Planner loop, tool-call parsing, and final-response handling
+7. **src/planner/tools.ts** plus **src/planner/tools/** - Barrel exports plus built-in planner tool implementations for workspace interaction
 
 ## Getting Started for Developers
 
@@ -321,6 +323,7 @@ flowchart TD
 10. Model tuning overrides are only sent when their matching enable checkbox is on
 11. The clarification-aware ask-questions behavior is available through the `@lmstudio` participant path, not through the plain model-provider request path
 12. A clarification checkpoint can only resume inside later `@lmstudio` turns because participant metadata is participant-scoped
+13. Shared LM Studio identifiers, regex patterns, command names, and default values are centralized in `src/constants.ts` so provider, participant, planner, and documentation surfaces stay aligned
 
 ## Key Architectural Takeaways
 
@@ -335,6 +338,7 @@ flowchart TD
 9. Planner mode adds a second execution path after provider-side normalization and budget enforcement
 10. The clarification participant adds a second chat integration surface without changing the direct provider semantics
 11. Request-time observability depends on verbose logging and verbose progress settings, including active tuning summaries
+12. Centralizing shared constants reduces drift between the provider, participant, planner, extension commands, and user-facing slash-command documentation
 
 ## Configuration Details
 
