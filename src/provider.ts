@@ -31,7 +31,10 @@ function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxO
 const textDecoder = new TextDecoder();
 
 const userRequestPattern = /<userRequest>([\s\S]*?)<\/userRequest>/i;
-const plannerOverridePattern = /^(\s*Latest user request:\s*\r?\n)?\s*\/(plan|noplan)\b(?:[ \t]+|\r?\n+)?/i;
+const requestHeaderPattern = /^(\s*Latest user request:\s*\r?\n)?/i;
+const plannerOverridePattern = /^\/(lmsplan|lmsnoplan)\b(?:[ \t]+|\r?\n+)*/i;
+const maxTokensResetPattern = /^\/lmsmaxtokensreset\b(?:[ \t]+|\r?\n+)*/i;
+const maxTokensOverridePattern = /^\/lmsmaxtokens\b(?:[ \t]+([^\s]+))?(?:[ \t]+|\r?\n+)*/i;
 const DEFAULT_MAX_TOOL_RESULT_TOKENS = 8000;
 const DEFAULT_CONTEXT_OVERFLOW_POLICY = 'truncateMiddle';
 const CONTEXT_BUDGET_RECENT_MESSAGE_COUNT = 4;
@@ -102,6 +105,12 @@ type DebugPlannerSmokeTestResult = {
 };
 
 type PlannerModeOverride = 'plan' | 'noplan';
+type RequestCommandOverrides = {
+	plannerModeOverride?: PlannerModeOverride;
+	maxTokensOverride?: number;
+	resetMaxTokensOverride?: boolean;
+	notices: string[];
+};
 
 const SMOKE_TEST_SENTINEL = 'SMOKE_TEST_OK';
 const PLANNER_SMOKE_TEST_SENTINEL = 'PLANNER_SMOKE_TEST_OK';
@@ -552,41 +561,109 @@ function toPlannerLmStudioMessage(message: LmStudioMessage): PlannerLmStudioMess
 	};
 }
 
-function extractPlannerModeOverride(text: string | undefined): { cleanedText: string | undefined; override?: PlannerModeOverride; } {
+function didLikelyHitResponseTokenLimit(visibleResponseText: string, generatedTokens: number, maxTokens: number): boolean {
+	if (!visibleResponseText.trim() || maxTokens <= 0) {
+		return false;
+	}
+
+	const threshold = Math.max(1, maxTokens - Math.min(64, Math.max(8, Math.floor(maxTokens * 0.02))));
+	return generatedTokens >= threshold;
+}
+
+function createResponseTokenLimitNotice(maxTokens: number): string {
+	return `\n\nNot enough tokens to follow through on the response. LM Studio likely stopped at the current response cap (${maxTokens} max response tokens). Try a higher value with /lmsmaxtokens <number> or raise the LM Studio max-response-tokens setting.`;
+}
+
+function looksLikeResponseTokenLimitError(errorMessage: string): boolean {
+	return /(max(?:imum)?(?: response| output)? tokens?|finish reason:?\s*length|response token limit|output token limit|completion length limit|max_new_tokens)/i.test(errorMessage);
+}
+
+function extractRequestCommandOverrides(text: string | undefined): { cleanedText: string | undefined; overrides: RequestCommandOverrides; consumedCommand: boolean; } {
 	if (!text) {
-		return { cleanedText: text };
+		return { cleanedText: text, overrides: { notices: [] }, consumedCommand: false };
 	}
 
-	const match = plannerOverridePattern.exec(text);
-	if (!match) {
-		return { cleanedText: text };
+	const headerMatch = requestHeaderPattern.exec(text);
+	const prefix = headerMatch?.[1] ?? '';
+	let remaining = text.slice(prefix.length);
+	let plannerModeOverride: PlannerModeOverride | undefined;
+	let maxTokensOverride: number | undefined;
+	let resetMaxTokensOverride = false;
+	const notices: string[] = [];
+	let consumedCommand = false;
+
+	while (true) {
+		const trimmed = remaining.trimStart();
+		const leadingWhitespace = remaining.slice(0, remaining.length - trimmed.length);
+
+		const plannerMatch = plannerOverridePattern.exec(trimmed);
+		if (plannerMatch) {
+			plannerModeOverride = plannerMatch[1].toLowerCase() === 'lmsplan' ? 'plan' : 'noplan';
+			remaining = `${leadingWhitespace}${trimmed.slice(plannerMatch[0].length)}`;
+			consumedCommand = true;
+			continue;
+		}
+
+		const maxTokensResetMatch = maxTokensResetPattern.exec(trimmed);
+		if (maxTokensResetMatch) {
+			maxTokensOverride = undefined;
+			resetMaxTokensOverride = true;
+			remaining = `${leadingWhitespace}${trimmed.slice(maxTokensResetMatch[0].length)}`;
+			consumedCommand = true;
+			continue;
+		}
+
+		const maxTokensMatch = maxTokensOverridePattern.exec(trimmed);
+		if (maxTokensMatch) {
+			const rawValue = maxTokensMatch[1];
+			if (!rawValue) {
+				notices.push('LM Studio note: ignoring /lmsmaxtokens because it requires a positive integer, for example /lmsmaxtokens 8192.');
+			} else {
+				const parsedValue = Number(rawValue);
+				if (Number.isFinite(parsedValue) && parsedValue >= 1) {
+					maxTokensOverride = Math.max(1, Math.floor(parsedValue));
+					resetMaxTokensOverride = false;
+				} else {
+					notices.push(`LM Studio note: ignoring /lmsmaxtokens ${rawValue} because the value must be a positive integer.`);
+				}
+			}
+
+			remaining = `${leadingWhitespace}${trimmed.slice(maxTokensMatch[0].length)}`;
+			consumedCommand = true;
+			continue;
+		}
+
+		break;
 	}
 
-	const prefix = match[1] ?? '';
-	const override = match[2].toLowerCase() as PlannerModeOverride;
-	const cleanedText = `${prefix}${text.slice(match[0].length)}`.replace(/^\s+$/g, '').trimStart();
-
+	const cleanedText = `${prefix}${remaining}`.replace(/^\s+$/g, '').trimStart();
 	return {
 		cleanedText,
-		override,
+		overrides: {
+			plannerModeOverride,
+			maxTokensOverride,
+			resetMaxTokensOverride,
+			notices,
+		},
+		consumedCommand,
 	};
 }
 
-function applyPlannerModeOverrideToChatHistory(chatHistory: LmStudioChatHistory): { chatHistory: LmStudioChatHistory; override?: PlannerModeOverride; } {
+function applyRequestCommandOverridesToChatHistory(chatHistory: LmStudioChatHistory): { chatHistory: LmStudioChatHistory; overrides: RequestCommandOverrides; } {
 	const lastUserIndex = [...chatHistory.messages]
 		.map((message, index) => ({ message, index }))
 		.reverse()
 		.find(entry => entry.message.role === 'user' && isTextOnlyLmStudioMessage(entry.message))?.index;
 
 	if (lastUserIndex === undefined) {
-		return { chatHistory };
+		return { chatHistory, overrides: { notices: [] } };
 	}
 
 	const lastUserMessage = chatHistory.messages[lastUserIndex];
 	const text = getLmStudioMessageText(lastUserMessage);
-	const { cleanedText, override } = extractPlannerModeOverride(text);
-	if (!override || cleanedText === text) {
-		return { chatHistory, override };
+	const { cleanedText, overrides, consumedCommand } = extractRequestCommandOverrides(text);
+	if (!consumedCommand || cleanedText === text) {
+		return { chatHistory, overrides };
 	}
 
 	const updatedMessages = [...chatHistory.messages];
@@ -597,7 +674,7 @@ function applyPlannerModeOverrideToChatHistory(chatHistory: LmStudioChatHistory)
 
 	return {
 		chatHistory: { messages: updatedMessages },
-		override,
+		overrides,
 	};
 }
 
@@ -747,6 +824,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private plannerMaxToolResultTokens = DEFAULT_MAX_TOOL_RESULT_TOKENS;
 	private plannerFyiInstructionPath = '';
 	private modelTuning: ModelTuningSettings = createDefaultModelTuningSettings();
+	private sessionMaxTokensOverride: number | undefined;
 	private cacheHits = 0;
 	private cacheMisses = 0;
 	private readonly requestSignatureCounts = new Map<string, number>();
@@ -876,12 +954,21 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		}
 	}
 
-	private buildPredictionOptions(options: ProvideLanguageModelChatResponseOptions): PredictionOptions {
+	private resolveConfiguredMaxTokens(options: ProvideLanguageModelChatResponseOptions): number {
 		const configuredMaxTokens = this.modelTuning.maxTokensInResponse.enabled
 			? this.modelTuning.maxTokensInResponse.value
 			: undefined;
+		return Math.max(1, Math.floor(configuredMaxTokens ?? options.modelOptions?.maxTokens ?? 8192));
+	}
+
+	private getEffectiveMaxTokens(options: ProvideLanguageModelChatResponseOptions, includeSessionOverride = true): number {
+		const sessionOverride = includeSessionOverride ? this.sessionMaxTokensOverride : undefined;
+		return Math.max(1, Math.floor(sessionOverride ?? this.resolveConfiguredMaxTokens(options)));
+	}
+
+	private buildPredictionOptions(options: ProvideLanguageModelChatResponseOptions, includeSessionOverride = true): PredictionOptions {
 		const predictionOptions: PredictionOptions = {
-			maxTokens: Math.max(1, Math.floor(configuredMaxTokens ?? options.modelOptions?.maxTokens ?? 8192)),
+			maxTokens: this.getEffectiveMaxTokens(options, includeSessionOverride),
 			rawTools: toLmStudioRawTools(options.tools, options.toolMode),
 			contextOverflowPolicy: this.contextOverflowPolicy,
 		};
@@ -932,7 +1019,9 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			activeSettings.push(`repetitionPenalty=${predictionOptions.repeatPenalty}`);
 		}
 
-		if (this.modelTuning.maxTokensInResponse.enabled) {
+		if (this.sessionMaxTokensOverride !== undefined) {
+			activeSettings.push(`maxResponseTokens=${predictionOptions.maxTokens} (session override)`);
+		} else if (this.modelTuning.maxTokensInResponse.enabled) {
 			activeSettings.push(`maxResponseTokens=${predictionOptions.maxTokens}`);
 		}
 
@@ -1020,6 +1109,10 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				break;
 			}
 
+
+		if (didLikelyHitResponseTokenLimit(accumulatedResponse, generatedTokens, plannerPredictionOptions.maxTokens)) {
+			accumulatedResponse += createResponseTokenLimitNotice(plannerPredictionOptions.maxTokens);
+		}
 			generatedTokens += Math.max(0, fragment.tokensCount || 0);
 
 			if (fragment.content) {
@@ -1721,7 +1814,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				allowedTools: [...READ_ONLY_PLANNER_SMOKE_TEST_TOOLS],
 			};
 			const predictionOptions: PredictionOptions = {
-				...this.buildPredictionOptions({ modelOptions: { maxTokens: 96 }, tools: undefined, toolMode: LanguageModelChatToolMode.Auto, requestInitiator: 'lmstudio.debugPlannerSmokeTest' }),
+				...this.buildPredictionOptions({ modelOptions: { maxTokens: 96 }, tools: undefined, toolMode: LanguageModelChatToolMode.Auto, requestInitiator: 'lmstudio.debugPlannerSmokeTest' }, false),
 				rawTools: { type: 'none' },
 			};
 
@@ -1854,15 +1947,40 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		if (this.shouldInjectConfiguredSystemPrompt(options.requestInitiator)) {
 			this.log(`Injected configured system prompt (${estimateTokenCount(this.configuredSystemPrompt)} tokens)`);
 		}
-		const plannerOverrideResult = applyPlannerModeOverrideToChatHistory(baseChatHistory);
-		const chatHistory = plannerOverrideResult.chatHistory;
-		const effectivePlannerEnabled = plannerOverrideResult.override === 'plan'
+		const requestOverrideResult = applyRequestCommandOverridesToChatHistory(baseChatHistory);
+		const chatHistory = requestOverrideResult.chatHistory;
+		const effectivePlannerEnabled = requestOverrideResult.overrides.plannerModeOverride === 'plan'
 			? true
-			: plannerOverrideResult.override === 'noplan'
+			: requestOverrideResult.overrides.plannerModeOverride === 'noplan'
 				? false
 				: this.plannerEnabled;
-		if (plannerOverrideResult.override) {
-			this.log(`Per-request planner override detected: /${plannerOverrideResult.override} (configured planner.enabled=${this.plannerEnabled})`);
+		if (requestOverrideResult.overrides.plannerModeOverride) {
+			const plannerCommandName = requestOverrideResult.overrides.plannerModeOverride === 'plan' ? '/lmsplan' : '/lmsnoplan';
+			this.log(`Per-request planner override detected: ${plannerCommandName} (configured planner.enabled=${this.plannerEnabled})`);
+		}
+		for (const notice of requestOverrideResult.overrides.notices) {
+			progress.report(new LanguageModelTextPart(`${notice}\n\n`));
+		}
+		if (requestOverrideResult.overrides.resetMaxTokensOverride) {
+			const previousEffectiveMaxTokens = this.getEffectiveMaxTokens(options);
+			const previousSessionMaxTokens = this.sessionMaxTokensOverride;
+			this.sessionMaxTokensOverride = undefined;
+			const restoredEffectiveMaxTokens = this.getEffectiveMaxTokens(options);
+			const resetNotice = previousSessionMaxTokens !== undefined
+				? `LM Studio note: cleared the session max response tokens override (was ${previousSessionMaxTokens}; previously effective cap ${previousEffectiveMaxTokens}). Requests now use the configured/default cap (${restoredEffectiveMaxTokens}). Use /lmsmaxtokens <number> to set a new session override.`
+				: `LM Studio note: no session max response tokens override was active. Requests are using the configured/default cap (${restoredEffectiveMaxTokens}).`;
+			this.log(`Session max response tokens override cleared; effective cap is now ${restoredEffectiveMaxTokens}`);
+			progress.report(new LanguageModelTextPart(`${resetNotice}\n\n`));
+		}
+		if (requestOverrideResult.overrides.maxTokensOverride !== undefined) {
+			const previousEffectiveMaxTokens = this.getEffectiveMaxTokens(options);
+			this.sessionMaxTokensOverride = requestOverrideResult.overrides.maxTokensOverride;
+			const currentEffectiveMaxTokens = this.getEffectiveMaxTokens(options);
+			this.log(`Session max response tokens override set via /lmsmaxtokens ${currentEffectiveMaxTokens} (previous effective cap ${previousEffectiveMaxTokens})`);
+			const overrideNotice = previousEffectiveMaxTokens === currentEffectiveMaxTokens
+				? `LM Studio note: session max response tokens remains ${currentEffectiveMaxTokens}. This value stays in effect for later LM Studio requests until you change it again, use /lmsmaxtokensreset, or reload VS Code.`
+				: `LM Studio note: session max response tokens changed from ${previousEffectiveMaxTokens} to ${currentEffectiveMaxTokens}. This value stays in effect for later LM Studio requests until you change it again, use /lmsmaxtokensreset, or reload VS Code.`;
+			progress.report(new LanguageModelTextPart(`${overrideNotice}\n\n`));
 		}
 			// Get a model instance - try to get the requested model or use the first available one
 			let llmModel;
@@ -2030,7 +2148,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				}
 			}
 
-			// A per-request /plan or /noplan prefix can override the global planner setting for
+			// A per-request /lmsplan or /lmsnoplan prefix can override the global planner setting for
 			// this single request, which is a better UX fit than flipping the setting back and forth.
 			if (effectivePlannerEnabled) {
 				await this.providePlannerResponse(llmModel, processedChatHistory, predictionOptions, progress, token);
@@ -2195,6 +2313,12 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				return;
 			}
 			await prediction;
+			if (didLikelyHitResponseTokenLimit(visibleResponseText, generatedTokens, predictionOptions.maxTokens)) {
+				const tokenLimitNotice = createResponseTokenLimitNotice(predictionOptions.maxTokens);
+				progress.report(new LanguageModelTextPart(tokenLimitNotice));
+				visibleResponseText += tokenLimitNotice;
+				this.log(`🏧 Likely hit LM Studio response token cap at ${predictionOptions.maxTokens} max tokens.`);
+			}
 			const ended = Date.now();
 			this.log(`Streaming complete fragments=${fragmentCount} chars=${receivedChars} toolCalls=${receivedToolCalls} duration=${ended-started}ms firstFragmentLatency=${firstFragmentTime?firstFragmentTime-started:'n/a'}ms`);
 			if (visibleResponseText || receivedToolCalls > 0) {
@@ -2295,6 +2419,8 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 						"💡 **Quick check:** Look for a green indicator next to your model in LM Studio!";
 				} else if (errorMessage.includes('rate limit') || errorMessage.includes('429')) {
 					errorMessage = "⏱️ **Rate limit exceeded**\\n\\nPlease wait a moment and try again.";
+				} else if (looksLikeResponseTokenLimitError(errorMessage)) {
+					errorMessage = 'Not enough tokens to follow through on the response. LM Studio likely stopped because the response token limit was reached. Try a higher value with /lmsmaxtokens <number> or raise the LM Studio max-response-tokens setting.';
 				}
 			}
 

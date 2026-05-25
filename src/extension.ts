@@ -248,7 +248,7 @@ function getDocumentationContent(): string {
         <div class="step">
             <div class="step-number">Step 7: Start Chatting!</div>
             <p>Open GitHub Copilot Chat and select your LM Studio model from the model picker. Look for models with the "LM Studio" family name.</p>
-            <p>If you want to force planner mode for one request, start the prompt with <strong>/plan</strong>. If you want to bypass planner mode for one request, start the prompt with <strong>/noplan</strong>.</p>
+            <p>If you want to force planner mode for one request, start the prompt with <strong>/lmsplan</strong>. If you want to bypass planner mode for one request, start the prompt with <strong>/lmsnoplan</strong>. If you want to change the response cap for the rest of the current VS Code session, start with <strong>/lmsmaxtokens 8192</strong> or another positive integer, and use <strong>/lmsmaxtokensreset</strong> to clear it.</p>
         </div>
 
         <div class="step">
@@ -318,13 +318,27 @@ function getDocumentationContent(): string {
 
         <div class="step">
             <div class="step-number">Planner Shortcuts</div>
-            <p>You can override the default planner setting per request:</p>
+            <p>You can override the default planner setting per request and set a session-level LM Studio response cap:</p>
             <ul>
-                <li><strong>/plan</strong> forces planner mode for that one prompt</li>
-                <li><strong>/noplan</strong> forces direct mode for that one prompt</li>
+                <li><strong>/lmsplan</strong> forces planner mode for that one prompt</li>
+                <li><strong>/lmsnoplan</strong> forces direct mode for that one prompt</li>
+                <li><strong>/lmsmaxtokens 8192</strong> changes the response-token cap for later LM Studio requests in the current VS Code session</li>
+                <li><strong>/lmsmaxtokensreset</strong> clears that session override and restores the configured/default cap</li>
                 <li>If neither prefix is present, the extension uses the saved <code>lmstudio.planner.enabled</code> setting</li>
             </ul>
             <p>These prefixes are stripped before the request is sent to the model, so they act as local routing hints rather than part of the prompt content.</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Response Token Cap</div>
+            <p>If a reply likely stops because the response-token cap is too low, the chat transcript now says <code>Not enough tokens to follow through on the response.</code></p>
+            <ul>
+                <li>Use <strong>/lmsmaxtokens 8192</strong> to raise the cap for later LM Studio requests in the current VS Code session</li>
+                <li>Use a smaller number if you want a tighter cap for the current VS Code session</li>
+                <li>When the session override changes, chat reports the previous effective cap and the new active cap so you can see what to change back to later</li>
+                <li>Use <strong>/lmsmaxtokensreset</strong> to clear the session override and restore the configured/default cap</li>
+                <li>Change <code>lmstudio.modelTuning.maxTokensInResponse</code> in settings if you want a persistent default</li>
+            </ul>
         </div>
 
         <div class="step">
@@ -358,7 +372,9 @@ function getDocumentationContent(): string {
                 <li><strong>No models available:</strong> Load a model in LM Studio's Local Server tab</li>
                 <li><strong>Weird response formatting:</strong> The extension now filters out model artifacts automatically</li>
                 <li><strong>Planner parse warning on the first round:</strong> Some local models need one retry before they emit valid structured output. If the planner later executes a tool and reaches the sentinel, that warning is recoverable.</li>
-                <li><strong>Need planner mode only sometimes?:</strong> Use <code>/plan</code> or <code>/noplan</code> at the start of the prompt instead of changing the global planner setting back and forth.</li>
+                <li><strong>Need planner mode only sometimes?:</strong> Use <code>/lmsplan</code> or <code>/lmsnoplan</code> at the start of the prompt instead of changing the global planner setting back and forth.</li>
+                <li><strong>Need a bigger or smaller reply cap for this VS Code session?:</strong> Use <code>/lmsmaxtokens 8192</code> with the value you want, then <code>/lmsmaxtokensreset</code> when you want to clear it.</li>
+                <li><strong>Response stopped early with a token warning?:</strong> If chat says <code>Not enough tokens to follow through on the response.</code>, raise the cap with <code>/lmsmaxtokens</code>, reset it later with <code>/lmsmaxtokensreset</code>, or change the matching LM Studio setting.</li>
                 <li><strong>Clarification did not resume?:</strong> Make sure your follow-up reply is still addressed to <code>@lmstudio</code>. The stored checkpoint belongs to that participant thread.</li>
                 <li><strong>Slow responses:</strong> Try a smaller model or check your system resources</li>
                 <li><strong>Ideal Context Size:</strong> I've found context size of 128K tokens for my use cases, but YMMV</li>

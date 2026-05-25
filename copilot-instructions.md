@@ -65,6 +65,8 @@ These instructions guide the AI agent on coding style, design philosophy, and be
 2. **What Planner Mode Does Not Do**: User-facing docs should explicitly state that planner mode does not create a dedicated Copilot-style plan pane, does not expose VS Code chat tools directly to the model, and does not guarantee a successful file edit
 3. **Planner Telemetry**: When documenting planner progress, note that verbose progress reporting can show `Planner running...` with prompt progress and tokens-per-second while the planner is active
 4. **Consistency Across Surfaces**: Keep README, Architecture.md, and the extension's Documentation window aligned whenever planner mode behavior or wording changes
+5. **Slash Command Scope**: Document `/lmsplan` and `/lmsnoplan` as per-request routing overrides, but document `/lmsmaxtokens <number>` as a session-scoped response-cap override that remains active for later LM Studio requests until changed again, cleared with `/lmsmaxtokensreset`, or discarded by reloading VS Code
+6. **Token Cap Messaging**: When documenting `/lmsmaxtokens`, mention that chat reports the previous effective cap and the new active cap when the session override changes, and that a best-effort warning appears if a reply likely stopped because the cap was too low
 
 ### Testing Considerations
 1. **Local Environment Testing**: Always test with actual LM Studio instances to verify functionality

@@ -175,7 +175,7 @@
 				"lmstudio.planner.enabled": {
 					"type": "boolean",
 					"default": false,
-					"description": "🧠 Enable the planning agent. When enabled, requests are routed through a ReAct-style planner that can use tools (file read/write, workspace search, VS Code commands) before returning a final answer.",
+					"description": "🧠 Enable the planning agent. When enabled, requests are routed through a ReAct-style planner that can use tools (file read/write, workspace search, VS Code commands) before returning a final answer. You can still override this per request with /lmsplan or /lmsnoplan.",
 					"scope": "application"
 				},
 				"lmstudio.planner.maxIterations": {
@@ -275,14 +275,14 @@
 					"lmstudio.modelTuning.maxTokensInResponse.enabled": {
 						"type": "boolean",
 						"default": false,
-						"description": "Enable a global max tokens in response override for all LM Studio responses.",
+						"description": "Enable a global max tokens in response override for all LM Studio responses. You can still override this for the current VS Code session with /lmsmaxtokens <number> and clear it with /lmsmaxtokensreset.",
 						"scope": "application"
 					},
 					"lmstudio.modelTuning.maxTokensInResponse.value": {
 						"type": "number",
 						"default": 4096,
 						"minimum": 1,
-						"description": "Maximum generated tokens to allow in a response. Only applied when the corresponding enable setting is checked.",
+						"description": "Maximum generated tokens to allow in a response. Only applied when the corresponding enable setting is checked. If LM Studio likely stops because of this cap, chat will now report that there were not enough tokens to finish the response.",
 						"scope": "application"
 					}
 				}

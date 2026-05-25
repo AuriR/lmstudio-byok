@@ -30,8 +30,9 @@
 - 1.4 | 2026-05-23 | Copilot Agent | Added smoke-test validation notes and planner parse-retry guidance
 - 1.5 | 2026-05-24 | Copilot Agent | Clarified planner-mode user experience, status indicators, and documentation scope/limits
 - 1.6 | 2026-05-24 | Copilot Agent | Distinguished platform-backed planner behavior from extension-defined heuristic recovery
-- 1.7 | 2026-05-24 | Copilot Agent | Added per-request /plan and /noplan overrides and documented routing precedence
+- 1.7 | 2026-05-24 | Copilot Agent | Added per-request planner overrides and documented routing precedence
 - 1.8 | 2026-05-24 | Copilot Agent | Added LM Studio clarification participant architecture and updated chat flows
+- 1.9 | 2026-05-25 | Copilot Agent | Renamed LM Studio slash commands, changed max-token overrides to session-scoped behavior with reset support, and documented the best-effort token-limit warning path
 
 ## Executive Overview
 
@@ -153,7 +154,9 @@ The architecture now has two request-execution modes:
 1. **Direct mode**: The provider prepares chat history and sends it straight to LM Studio's `respond()` API.
 2. **Planner mode**: The provider still performs local normalization and prompt-budget checks first, then routes the prepared history into a local ReAct-style planner loop.
 
-The global setting `lmstudio.planner.enabled` determines the default mode, but the last user request may override that default for a single turn. A prompt that starts with `/plan` forces planner mode for that request, while `/noplan` forces direct mode for that request. The provider strips the override prefix before the request is forwarded to LM Studio or the planner loop.
+The global setting `lmstudio.planner.enabled` determines the default mode, but the last user request may override that default for a single turn. A prompt that starts with `/lmsplan` forces planner mode for that request, while `/lmsnoplan` forces direct mode for that request. A prompt that starts with `/lmsmaxtokens <number>` sets a session-level response-token cap override that stays active for later LM Studio requests until it is changed again, cleared with `/lmsmaxtokensreset`, or discarded by reloading VS Code. The provider strips these prefixes before the request is forwarded to LM Studio or the planner loop.
+
+If a response likely stops because the reply cap is too low, the provider now appends a user-visible note explaining that there were not enough tokens to finish the response. That detection is intentionally best-effort because this LM Studio integration path does not always expose a stable finish-reason signal.
 
 Planner mode uses built-in extension tools for file IO, workspace edits, workspace search, and VS Code commands. The planner repeatedly asks the model for either a structured tool call or a final response. Tool results are truncated before being fed back into future planner rounds, based on `lmstudio.planner.maxToolResultTokens`.
 
@@ -200,7 +203,7 @@ At a high level, the flow is:
 3. In the provider path, the provider serializes message parts, preserves system messages, and prioritizes the explicit user request.
 4. In the participant path, the participant resolves an LM Studio model and decides whether a clarifying question is required.
 5. The provider path applies local performance features such as caveman prompting, token budgeting, history trimming, oversized-request blocking, and any enabled global model tuning overrides.
-6. The provider path chooses either direct mode or planner mode, using `/plan` or `/noplan` as a per-request override when present and otherwise falling back to `lmstudio.planner.enabled`.
+6. The provider path chooses either direct mode or planner mode, using `/lmsplan` or `/lmsnoplan` as a per-request override when present and otherwise falling back to `lmstudio.planner.enabled`. It also accepts `/lmsmaxtokens <number>` as a session-level response-cap override, `/lmsmaxtokensreset` to clear that override, and can emit a best-effort token-limit warning when a reply appears to stop at that cap.
 7. The participant path either asks one clarifying question and stores metadata, or forwards the actionable request to an LM Studio model.
 8. VS Code renders text, follow-up prompts, tool calls, and status updates in the chat window and status bar.
 
@@ -286,7 +289,7 @@ flowchart TD
 3. **src/participant.ts** - Chat participant implementation for clarification checkpoints and LM Studio model forwarding
 4. **package.json** - Extension manifest with model and chat-participant contributions plus configuration
 5. **src/planner/plan.ts** - Planner loop, tool-call parsing, and final-response handling
-6. **src/planner/tools.ts** - Built-in planner tool implementations for workspace interaction
+6. **src/planner/tools.ts** plus **src/planner/tools/** - Barrel exports plus built-in planner tool implementations for workspace interaction
 
 ## Getting Started for Developers
 

@@ -40,10 +40,12 @@ If you want LM Studio to stop and ask for one missing detail before proceeding, 
 - When the request is actionable, the participant sends it straight to LM Studio
 - When the request is materially ambiguous, the participant asks one clarifying question, stores that checkpoint in chat metadata, and resumes after your next reply
 
-Per-request planner overrides are also available in chat:
+Chat command overrides are also available in chat:
 
-- Start a prompt with `/plan` to force planner mode for that one request, even if `lmstudio.planner.enabled` is off.
-- Start a prompt with `/noplan` to force direct mode for that one request, even if `lmstudio.planner.enabled` is on.
+- Start a prompt with `/lmsplan` to force planner mode for that one request, even if `lmstudio.planner.enabled` is off.
+- Start a prompt with `/lmsnoplan` to force direct mode for that one request, even if `lmstudio.planner.enabled` is on.
+- Start a prompt with `/lmsmaxtokens 8192` to set a session-level response-token cap override for later LM Studio requests in the current VS Code session.
+- Start a prompt with `/lmsmaxtokensreset` to clear that session override and go back to the configured/default cap.
 
 These prefixes are stripped before the request is sent to the model. The global planner setting still acts as the default when neither prefix is present.
 
@@ -129,9 +131,11 @@ Planner mode is optional and off by default. When enabled, the provider routes t
 
 You can override the default planner behavior per request, since keeping it on permanently is a personal preference:
 
-1. Start a prompt with `/plan` when you want the planner loop for that prompt only.
-2. Start a prompt with `/noplan` when you want a direct one-shot response for that prompt only.
-3. If neither prefix is present, the extension falls back to the `lmstudio.planner.enabled` setting.
+1. Start a prompt with `/lmsplan` when you want the planner loop for that prompt only.
+2. Start a prompt with `/lmsnoplan` when you want a direct one-shot response for that prompt only.
+3. Start a prompt with `/lmsmaxtokens 8192` when you want a session-level response cap override that stays active until you change it again, reset it, or reload VS Code.
+4. Start a prompt with `/lmsmaxtokensreset` when you want to clear that session override and return to the configured/default cap.
+5. If none of those prefixes is present, the extension falls back to the saved settings and any active session override.
 
 Current behavior and constraints:
 
@@ -143,7 +147,18 @@ Current behavior and constraints:
 6. When verbose progress reporting is enabled, the status bar shows `Planner running...` with prompt progress and, during generation, an estimated tokens-per-second indicator instead of raw iteration counts.
 7. Planner mode does not create an interactive Copilot-style plan pane, does not expose VS Code chat tools to the model, and does not guarantee that the model will successfully edit files.
 8. The planner may decide no change is needed, stop after `lmstudio.planner.maxIterations`, or fail on malformed local-model tool output, so it is best treated as an advanced feature that trades latency for extra reasoning and tool execution.
-9. `/plan` and `/noplan` only affect the request they are typed on; they do not change your saved settings.
+9. `/lmsplan` and `/lmsnoplan` only affect the request they are typed on.
+10. `/lmsmaxtokens <number>` changes the max-response-token cap for later LM Studio requests in the current VS Code session until you change it again, use `/lmsmaxtokensreset`, or reload VS Code. It does not change your saved settings.
+
+### Response Token Cap Behavior
+
+The extension now supports a session-level response-token override and a clearer chat notice when LM Studio likely stops because the reply cap is too low.
+
+1. Use `/lmsmaxtokens 8192` at the start of a prompt to set the response cap for later LM Studio requests in the current VS Code session.
+2. The chat notice reports the previous effective cap and the new active cap so you can see what changed.
+3. Use `/lmsmaxtokensreset` to clear the session override and return to the configured/default behavior.
+4. If the current reply likely stops because the response cap was reached, chat appends: `Not enough tokens to follow through on the response.`
+5. This detection is best-effort. LM Studio does not always provide a clean finish-reason signal through this integration path, so the extension infers the condition from the token cap and related error text.
 
 ---
 
@@ -178,6 +193,13 @@ Current behavior and constraints:
 - Ensure your system meets LM Studio's requirements
 - Consider using smaller models for better performance
 - Check LM Studio's GPU acceleration settings
+
+### Response stopped early
+
+- If chat says `Not enough tokens to follow through on the response.`, the current reply likely hit the response-token cap.
+- Try `/lmsmaxtokens 8192` or another larger value to raise the cap for later LM Studio requests in the current VS Code session.
+- Use `/lmsmaxtokensreset` if you want to clear the session override afterward.
+- If you want a permanent default, enable `lmstudio.modelTuning.maxTokensInResponse.enabled` and raise `lmstudio.modelTuning.maxTokensInResponse.value`.
 
 ## API Reference
 
