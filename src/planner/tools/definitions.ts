@@ -3,9 +3,10 @@
  */
 
 import { ToolDefinition } from '../types';
+import { TOOL_READ_FILE, TOOL_WRITE_FILE, TOOL_WRITE_PROJECT_FILES, TOOL_APPLY_WORKSPACE_EDIT, TOOL_RUN_VSCODE_COMMAND, TOOL_SEARCH_WORKSPACE } from '../../constants';
 
 export const READ_FILE_TOOL: ToolDefinition = {
-  name: 'read_file',
+  name: TOOL_READ_FILE,
   description: 'Read the contents of a file at the specified path. Use this to examine file contents before making changes. This tool reads files only, not directories.',
   enabled: true,
   inputSchema: {
@@ -38,7 +39,7 @@ export const READ_FILE_TOOL: ToolDefinition = {
 };
 
 export const WRITE_FILE_TOOL: ToolDefinition = {
-  name: 'write_file',
+  name: TOOL_WRITE_FILE,
   description: 'Write content to a file at the specified path. Creates the file if it does not exist, or overwrites if it does. Prefer this for whole-file rewrites such as markdown or documentation updates after reading the current file.',
   enabled: true,
   inputSchema: {
@@ -58,7 +59,7 @@ export const WRITE_FILE_TOOL: ToolDefinition = {
 };
 
 export const WRITE_PROJECT_FILES_TOOL: ToolDefinition = {
-  name: 'write_project_files',
+  name: TOOL_WRITE_PROJECT_FILES,
   description: 'Create or update multiple files in one tool call. Prefer this for project scaffolding or whenever you need to create several files together, such as package.json plus src files for a new app.',
   enabled: true,
   inputSchema: {
@@ -82,7 +83,7 @@ export const WRITE_PROJECT_FILES_TOOL: ToolDefinition = {
 };
 
 export const APPLY_WORKSPACE_EDIT_TOOL: ToolDefinition = {
-  name: 'apply_workspace_edit',
+  name: TOOL_APPLY_WORKSPACE_EDIT,
   description: 'Apply a workspace edit to modify one or more files. Use this for precise code modifications like adding, removing, or replacing text.',
   enabled: true,
   inputSchema: {
@@ -124,7 +125,7 @@ export const APPLY_WORKSPACE_EDIT_TOOL: ToolDefinition = {
 };
 
 export const RUN_VSCODE_COMMAND_TOOL: ToolDefinition = {
-  name: 'run_vscode_command',
+  name: TOOL_RUN_VSCODE_COMMAND,
   description: 'Execute a VS Code command by its ID. Use this only for real built-in or extension command IDs that already exist in the current VS Code environment. Do not use it as a generic shell or terminal runner.',
   enabled: true,
   inputSchema: {
@@ -145,7 +146,7 @@ export const RUN_VSCODE_COMMAND_TOOL: ToolDefinition = {
 };
 
 export const SEARCH_WORKSPACE_TOOL: ToolDefinition = {
-  name: 'search_workspace',
+  name: TOOL_SEARCH_WORKSPACE,
   description: 'Search for text patterns across all files in the workspace using grep-style matching.',
   enabled: true,
   inputSchema: {

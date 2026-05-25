@@ -17,6 +17,12 @@ import {
 } from './types';
 import { DefaultToolRegistry, BUILTIN_TOOLS } from './tools';
 import { generateAgentSystemPrompt, loadFyiInstructions } from './systemPrompt';
+import {
+	TASK_LIKELY_REQUIRES_WORKSPACE_CHANGES_PATTERN,
+	TASK_LIKELY_TARGETS_DOCUMENTATION_PATTERN,
+	TASK_LIKELY_TARGETS_PROJECT_SETUP_PATTERN,
+	RESPONSE_LOOKS_LIKE_INCOMPLETE_PROGRESS_NOTE_PATTERN,
+} from '../constants';
 
 // ─── JSON Parsing Utilities ────────────────────────────────────────────────────
 
@@ -33,15 +39,15 @@ interface ParsedResponse {
 function taskLikelyRequiresWorkspaceChanges(text: string): boolean {
   // This is heuristic planner routing, not a platform contract. It exists to decide when a
   // final natural-language answer is insufficient unless a real workspace action also happened.
-  return /\b(update|edit|modify|change|fix|implement|add|write|rewrite|rename|remove|document|documentation|create|build|scaffold|generate|setup|set up|bootstrap)\b/i.test(text);
+  return TASK_LIKELY_REQUIRES_WORKSPACE_CHANGES_PATTERN.test(text);
 }
 
 function taskLikelyTargetsDocumentation(text: string): boolean {
-  return /\b(readme|architecture|documentation|docs|webview|markdown|md\b|welcome text)\b/i.test(text);
+  return TASK_LIKELY_TARGETS_DOCUMENTATION_PATTERN.test(text);
 }
 
 function taskLikelyTargetsProjectSetup(text: string): boolean {
-  return /\b(create|scaffold|bootstrap|vite|react|website|web site|webapp|web app|single page|single-page|project from scratch)\b/i.test(text);
+  return TASK_LIKELY_TARGETS_PROJECT_SETUP_PATTERN.test(text);
 }
 
 function responseLooksLikeIncompleteProgressNote(text: string): boolean {
@@ -49,7 +55,7 @@ function responseLooksLikeIncompleteProgressNote(text: string): boolean {
   // instead of issuing the next tool call, and there is no external spec that normalizes that.
   // Treat future-tense scaffold/create narration as incomplete so project-setup tasks do
   // not terminate before any file-writing tool has actually succeeded.
-  return /\b(let me|now i(?:'| wi)ll|i(?:'| wi)ll now|i need to|i've identified|i have identified|the key files are|now i'll update|next(?:,)? i(?:'| wi)ll|i am going to|i(?:'| wi)ll scaffold|scaffold a complete|i(?:'| wi)ll create|starting to|building your|creating your|scaffolding your|working on)\b/i.test(text);
+  return RESPONSE_LOOKS_LIKE_INCOMPLETE_PROGRESS_NOTE_PATTERN.test(text);
 }
 
 function responseLooksLikeTaskRestatement(text: string): boolean {

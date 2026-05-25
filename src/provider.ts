@@ -8,6 +8,26 @@ import { createPlanner } from './planner/plan';
 import { DefaultToolRegistry } from './planner/tools';
 import { PlannerConfig, LmStudioMessage as PlannerLmStudioMessage } from './planner/types';
 import { encode } from 'gpt-tokenizer';
+import {
+	CONFIGURATION_ROOT,
+	DEFAULT_BASE_URL,
+	DEFAULT_CONTEXT_OVERFLOW_POLICY,
+	DEFAULT_MAX_RESPONSE_TOKENS,
+	DEFAULT_MAX_TOOL_RESULT_TOKENS,
+	DEFAULT_MIN_P,
+	DEFAULT_REPETITION_PENALTY,
+	DEFAULT_SYSTEM_PROMPT,
+	DEFAULT_TEMPERATURE,
+	DEFAULT_TOP_K,
+	DEFAULT_TOP_P,
+	CONTEXT_BUDGET_RECENT_MESSAGE_COUNT,
+	MIN_MESSAGE_TEXT_BUDGET_TOKENS,
+	USER_REQUEST_PATTERN as userRequestPattern,
+	REQUEST_HEADER_PATTERN as requestHeaderPattern,
+	PLANNER_OVERRIDE_PATTERN as plannerOverridePattern,
+	MAX_TOKENS_RESET_PATTERN as maxTokensResetPattern,
+	MAX_TOKENS_OVERRIDE_PATTERN as maxTokensOverridePattern,
+} from './constants';
 
 function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxOutputTokens: number, supportsTools = true, supportsImageInput = false): LanguageModelChatInformation {
 	return {
@@ -36,7 +56,6 @@ const plannerOverridePattern = /^\/(lmsplan|lmsnoplan)\b(?:[ \t]+|\r?\n+)*/i;
 const maxTokensResetPattern = /^\/lmsmaxtokensreset\b(?:[ \t]+|\r?\n+)*/i;
 const maxTokensOverridePattern = /^\/lmsmaxtokens\b(?:[ \t]+([^\s]+))?(?:[ \t]+|\r?\n+)*/i;
 const DEFAULT_MAX_TOOL_RESULT_TOKENS = 8000;
-const DEFAULT_CONTEXT_OVERFLOW_POLICY = 'truncateMiddle';
 const CONTEXT_BUDGET_RECENT_MESSAGE_COUNT = 4;
 const MIN_MESSAGE_TEXT_BUDGET_TOKENS = 128;
 const DEFAULT_BASE_URL = 'ws://localhost:1234';
@@ -48,7 +67,7 @@ const DEFAULT_REPETITION_PENALTY = 1.2;
 const DEFAULT_MAX_RESPONSE_TOKENS = 4096;
 const DEFAULT_SYSTEM_PROMPT = 'Think step-by-step. Break down the problem into detailed reasoning steps before answering.';
 
-type ContextOverflowPolicy = 'stopAtLimit' | 'truncateMiddle' | 'rollingWindow';
+type ContextOverflowPolicy = typeof POLICY_STOP_AT_LIMIT | typeof POLICY_TRUNCATE_MIDDLE | typeof POLICY_ROLLING_WINDOW;
 type CheckedNumericSetting = { enabled: boolean; value: number; };
 type ModelTuningSettings = {
 	temperature: CheckedNumericSetting;
@@ -310,7 +329,7 @@ function truncateTextToTokenBudget(text: string, maxTokens: number): string {
 }
 
 function normalizeContextOverflowPolicy(value: unknown): ContextOverflowPolicy {
-	if (value === 'stopAtLimit' || value === 'truncateMiddle' || value === 'rollingWindow') {
+	if (value === POLICY_STOP_AT_LIMIT || value === POLICY_TRUNCATE_MIDDLE || value === POLICY_ROLLING_WINDOW) {
 		return value;
 	}
 
@@ -839,29 +858,29 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	readonly onDidChangeLanguageModelChatInformation = this._onDidChange.event;
 
 	constructor(extensionPath: string) {
-		this.output = window.createOutputChannel('LM Studio');
-		this.statusBar = window.createStatusBarItem('lmstudio.progress', StatusBarAlignment.Left, 100);
-		this.statusBar.name = 'LM Studio Progress';
+		this.output = window.createOutputChannel(OUTPUT_CHANNEL_NAME);
+		this.statusBar = window.createStatusBarItem(STATUS_BAR_ID, StatusBarAlignment.Left, 100);
+		this.statusBar.name = STATUS_BAR_NAME;
 		this.statusBar.hide();
-		this.chaChingSoundPath = path.join(extensionPath, 'cha-ching.wav');
+		this.chaChingSoundPath = path.join(extensionPath, SOUND_FILE_NAME);
 		this.loadSettings();
 		// Listen for configuration changes to refresh the client
 		workspace.onDidChangeConfiguration((e: ConfigurationChangeEvent) => {
-			if (e.affectsConfiguration('lmstudio.baseUrl') ||
-				e.affectsConfiguration('lmstudio.apiKey') ||
-				e.affectsConfiguration('lmstudio.verboseLogging') ||
-				e.affectsConfiguration('lmstudio.verboseProgressReporting') ||
-				e.affectsConfiguration('lmstudio.playTokenThresholdSound') ||
-				e.affectsConfiguration('lmstudio.tokenSoundThreshold') ||
-				e.affectsConfiguration('lmstudio.autoCavemanPrompts') ||
-				e.affectsConfiguration('lmstudio.tokenBudgeting') ||
-				e.affectsConfiguration('lmstudio.contextOverflowPolicy') ||
-				e.affectsConfiguration('lmstudio.blockOversizedRequests') ||
-				e.affectsConfiguration('lmstudio.systemPrompt') ||
-				e.affectsConfiguration('lmstudio.performanceOptimizations') ||
-				e.affectsConfiguration('lmstudio.toggleAllPerformance') ||
-				e.affectsConfiguration('lmstudio.planner') ||
-				e.affectsConfiguration('lmstudio.modelTuning')) {
+			if (e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_BASE_URL}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_API_KEY}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_VERBOSE_LOGGING}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_VERBOSE_PROGRESS_REPORTING}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_PLAY_TOKEN_THRESHOLD_SOUND}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_TOKEN_SOUND_THRESHOLD}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_AUTO_CAVEMAN_PROMPTS}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_TOKEN_BUDGETING}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_CONTEXT_OVERFLOW_POLICY}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_BLOCK_OVERSIZED_REQUESTS}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_SYSTEM_PROMPT}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_PERFORMANCE_OPTIMIZATIONS}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_TOGGLE_ALL_PERFORMANCE}`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.planner`) ||
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.modelTuning')) {
 				this.log('Configuration changed, will refresh client on next request');
 				this.loadSettings();
 				// Reset the client so it gets recreated with new settings
@@ -878,19 +897,19 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 	private loadSettings() {
 		try {
-			const config = workspace.getConfiguration('lmstudio');
-			this.verbose = !!config.get<boolean>('verboseLogging');
-			this.verboseProgress = !!config.get<boolean>('verboseProgressReporting');
-			this.playTokenThresholdSound = !!config.get<boolean>('playTokenThresholdSound');
-			this.tokenSoundThreshold = Math.max(1, config.get<number>('tokenSoundThreshold', 10000));
-			this.autoCavemanPrompts = !!config.get<boolean>('autoCavemanPrompts');
-			this.performanceOptimizations = !!config.get<boolean>('performanceOptimizations');
-			this.contextOverflowPolicy = normalizeContextOverflowPolicy(config.get<string>('contextOverflowPolicy', DEFAULT_CONTEXT_OVERFLOW_POLICY));
-			this.blockOversizedRequests = config.get<boolean>('blockOversizedRequests', true);
-			this.configuredSystemPrompt = config.get<string>('systemPrompt', DEFAULT_SYSTEM_PROMPT).trim();
+			const config = workspace.getConfiguration(CONFIGURATION_ROOT);
+			this.verbose = !!config.get<boolean>(SETTING_VERBOSE_LOGGING);
+			this.verboseProgress = !!config.get<boolean>(SETTING_VERBOSE_PROGRESS_REPORTING);
+			this.playTokenThresholdSound = !!config.get<boolean>(SETTING_PLAY_TOKEN_THRESHOLD_SOUND);
+			this.tokenSoundThreshold = Math.max(1, config.get<number>(SETTING_TOKEN_SOUND_THRESHOLD, 10000));
+			this.autoCavemanPrompts = !!config.get<boolean>(SETTING_AUTO_CAVEMAN_PROMPTS);
+			this.performanceOptimizations = !!config.get<boolean>(SETTING_PERFORMANCE_OPTIMIZATIONS);
+			this.contextOverflowPolicy = normalizeContextOverflowPolicy(config.get<string>(SETTING_CONTEXT_OVERFLOW_POLICY, DEFAULT_CONTEXT_OVERFLOW_POLICY));
+			this.blockOversizedRequests = config.get<boolean>(SETTING_BLOCK_OVERSIZED_REQUESTS, true);
+			this.configuredSystemPrompt = config.get<string>(SETTING_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT).trim();
 			
 			// Handle toggle all performance setting
-			const toggleAll = !!config.get<boolean>('toggleAllPerformance');
+			const toggleAll = !!config.get<boolean>(SETTING_TOGGLE_ALL_PERFORMANCE);
 			if (toggleAll) {
 				// Turn all performance features on
 				this.autoCavemanPrompts = true;
@@ -898,40 +917,40 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				this.tokenBudgeting = true;
 			} else {
 				// Respect individual settings if toggle is off
-				this.autoCavemanPrompts = !!config.get<boolean>('autoCavemanPrompts');
-				this.performanceOptimizations = !!config.get<boolean>('performanceOptimizations');
-				this.tokenBudgeting = !!config.get<boolean>('tokenBudgeting');
+				this.autoCavemanPrompts = !!config.get<boolean>(SETTING_AUTO_CAVEMAN_PROMPTS);
+				this.performanceOptimizations = !!config.get<boolean>(SETTING_PERFORMANCE_OPTIMIZATIONS);
+				this.tokenBudgeting = !!config.get<boolean>(SETTING_TOKEN_BUDGETING);
 			}
 			
 			this.toggleAllPerformance = toggleAll;
-			this.plannerEnabled = !!config.get<boolean>('planner.enabled');
-			this.plannerMaxIterations = Math.max(1, Math.min(50, Math.floor(config.get<number>('planner.maxIterations', 10))));
-			this.plannerMaxToolResultTokens = Math.max(1000, Math.floor(config.get<number>('planner.maxToolResultTokens', DEFAULT_MAX_TOOL_RESULT_TOKENS)));
-			this.plannerFyiInstructionPath = config.get<string>('planner.fyiInstructionPath', '').trim();
+			this.plannerEnabled = !!config.get<boolean>(SETTING_PLANNER_ENABLED);
+			this.plannerMaxIterations = Math.max(1, Math.min(50, Math.floor(config.get<number>(SETTING_PLANNER_MAX_ITERATIONS, 10))));
+			this.plannerMaxToolResultTokens = Math.max(1000, Math.floor(config.get<number>(SETTING_PLANNER_MAX_TOOL_RESULT_TOKENS, DEFAULT_MAX_TOOL_RESULT_TOKENS)));
+			this.plannerFyiInstructionPath = config.get<string>(SETTING_PLANNER_FYI_INSTRUCTION_PATH, '').trim();
 			this.modelTuning = {
 				temperature: {
-					enabled: !!config.get<boolean>('modelTuning.temperature.enabled'),
-					value: clampNumber(config.get<number>('modelTuning.temperature.value', DEFAULT_TEMPERATURE), 0, 1),
+					enabled: !!config.get<boolean>(SETTING_MODEL_TUNING_TEMPERATURE_ENABLED),
+					value: clampNumber(config.get<number>(SETTING_MODEL_TUNING_TEMPERATURE_VALUE, DEFAULT_TEMPERATURE), 0, 1),
 				},
 				topP: {
-					enabled: !!config.get<boolean>('modelTuning.topP.enabled'),
-					value: clampNumber(config.get<number>('modelTuning.topP.value', DEFAULT_TOP_P), 0, 1),
+					enabled: !!config.get<boolean>(SETTING_MODEL_TUNING_TOP_P_ENABLED),
+					value: clampNumber(config.get<number>(SETTING_MODEL_TUNING_TOP_P_VALUE, DEFAULT_TOP_P), 0, 1),
 				},
 				topK: {
-					enabled: !!config.get<boolean>('modelTuning.topK.enabled'),
-					value: Math.max(1, Math.floor(config.get<number>('modelTuning.topK.value', DEFAULT_TOP_K))),
+					enabled: !!config.get<boolean>(SETTING_MODEL_TUNING_TOP_K_ENABLED),
+					value: Math.max(1, Math.floor(config.get<number>(SETTING_MODEL_TUNING_TOP_K_VALUE, DEFAULT_TOP_K))),
 				},
 				minP: {
-					enabled: !!config.get<boolean>('modelTuning.minP.enabled'),
-					value: clampNumber(config.get<number>('modelTuning.minP.value', DEFAULT_MIN_P), 0, 1),
+					enabled: !!config.get<boolean>(SETTING_MODEL_TUNING_MIN_P_ENABLED),
+					value: clampNumber(config.get<number>(SETTING_MODEL_TUNING_MIN_P_VALUE, DEFAULT_MIN_P), 0, 1),
 				},
 				repetitionPenalty: {
-					enabled: !!config.get<boolean>('modelTuning.repetitionPenalty.enabled'),
-					value: Math.max(0, config.get<number>('modelTuning.repetitionPenalty.value', DEFAULT_REPETITION_PENALTY)),
+					enabled: !!config.get<boolean>(SETTING_MODEL_TUNING_REPETITION_PENALTY_ENABLED),
+					value: Math.max(0, config.get<number>(SETTING_MODEL_TUNING_REPETITION_PENALTY_VALUE, DEFAULT_REPETITION_PENALTY)),
 				},
 				maxTokensInResponse: {
-					enabled: !!config.get<boolean>('modelTuning.maxTokensInResponse.enabled'),
-					value: Math.max(1, Math.floor(config.get<number>('modelTuning.maxTokensInResponse.value', DEFAULT_MAX_RESPONSE_TOKENS))),
+					enabled: !!config.get<boolean>(SETTING_MODEL_TUNING_MAX_TOKENS_IN_RESPONSE_ENABLED),
+					value: Math.max(1, Math.floor(config.get<number>(SETTING_MODEL_TUNING_MAX_TOKENS_IN_RESPONSE_VALUE, DEFAULT_MAX_RESPONSE_TOKENS))),
 				},
 			};
 		} catch {
@@ -1503,8 +1522,8 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 	private getBaseUrl(): string {
 		// Check VS Code workspace configuration first
-		const config = workspace.getConfiguration('lmstudio');
-		const configUrl = config.get<string>('baseUrl');
+		const config = workspace.getConfiguration(CONFIGURATION_ROOT);
+		const configUrl = config.get<string>(SETTING_BASE_URL);
 		if (configUrl) {
 			this.log('Using base URL from VS Code settings');
 			// Convert http/https to ws/wss for WebSocket protocol
@@ -1518,15 +1537,15 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 	private getApiKey(): string | null {
 		// First try environment variable
-		const envKey = process.env.LMSTUDIO_API_KEY;
+		const envKey = process.env[ENV_API_KEY];
 		if (envKey) {
 			this.log('Using API key from environment variable');
 			return envKey;
 		}
 
 		// Then try VS Code workspace configuration
-		const config = workspace.getConfiguration('lmstudio');
-		const configKey = config.get<string>('apiKey');
+		const config = workspace.getConfiguration(CONFIGURATION_ROOT);
+		const configKey = config.get<string>(SETTING_API_KEY);
 		if (configKey) {
 			this.log('Using API key from VS Code settings');
 			return configKey;
@@ -1553,7 +1572,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			if (!client) {
 				this.log('Client not available, using fallback model');
 				const fallbackModels = [
-					getChatModelInfo("server-not-started", "🚨 Start LM Studio Server First!", 32768, 8192, false),
+					getChatModelInfo(STATUS_SERVER_NOT_STARTED, "🚨 Start LM Studio Server First!", 32768, 8192, false),
 				];
 				this.cachedModels = fallbackModels;
 				this.cacheTimestamp = now;
@@ -1603,7 +1622,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			} else {
 				this.log('No models are currently loaded in LM Studio');
 				const fallbackModels = [
-					getChatModelInfo("no-models-loaded", "📱 Load a Model in LM Studio", 32768, 8192, false),
+					getChatModelInfo(STATUS_NO_MODELS_LOADED, "📱 Load a Model in LM Studio", 32768, 8192, false),
 				];
 				this.cachedModels = fallbackModels;
 				this.cacheTimestamp = now;
@@ -1630,7 +1649,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			}
 
 			const fallbackModels = [
-				getChatModelInfo("connection-error", errorModelName, 32768, 8192, false),
+				getChatModelInfo(STATUS_CONNECTION_ERROR, errorModelName, 32768, 8192, false),
 			];
 			this.cachedModels = fallbackModels;
 			this.cacheTimestamp = now;
@@ -1661,7 +1680,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		try {
 			const models = await this.prepareLanguageModelChat({ silent: false }, tokenSource.token);
 			const selectedModel = pickPreferredItemByIdentifier(
-				models.filter(candidate => !['connection-error', 'no-models-loaded', 'server-not-started'].includes(candidate.id)),
+				models.filter(candidate => ![STATUS_CONNECTION_ERROR, STATUS_NO_MODELS_LOADED, STATUS_SERVER_NOT_STARTED].includes(candidate.id)),
 			);
 
 			if (!selectedModel) {
@@ -1774,7 +1793,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		try {
 			const models = await this.prepareLanguageModelChat({ silent: false }, tokenSource.token);
 			const selectedModel = pickPreferredItemByIdentifier(
-				models.filter(candidate => !['connection-error', 'no-models-loaded', 'server-not-started'].includes(candidate.id)),
+				models.filter(candidate => ![STATUS_CONNECTION_ERROR, STATUS_NO_MODELS_LOADED, STATUS_SERVER_NOT_STARTED].includes(candidate.id)),
 			);
 
 			if (!selectedModel) {
@@ -1985,7 +2004,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			// Get a model instance - try to get the requested model or use the first available one
 			let llmModel;
 			try {
-				if (model.id === "no-models-loaded" || model.id === "connection-error" || model.id === "server-not-started") {
+				if (model.id === STATUS_NO_MODELS_LOADED || model.id === STATUS_CONNECTION_ERROR || model.id === STATUS_SERVER_NOT_STARTED) {
 					throw new Error("No models available or connection error. Please start LM Studio server and load a model.");
 				}
 

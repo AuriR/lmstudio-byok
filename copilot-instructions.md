@@ -73,3 +73,11 @@ These instructions guide the AI agent on coding style, design philosophy, and be
 2. **Model Context Verification**: Verify that context length metadata accurately reflects loaded models
 3. **Role Mapping Validation**: Test that system messages are correctly preserved through the conversion process
 4. **Feature Toggle Testing**: Ensure optional features (progress reporting, sounds, performance optimizations) work correctly when enabled/disabled
+
+## 📦 Constants Management
+1. **Centralize Reused Strings**: Any string, ID, or value that is referenced in multiple places across the codebase must live in `src/constants.ts`. This includes VS Code setting keys, command IDs, status/error model IDs, context overflow policies, tool names, display strings, regex patterns, and default values.
+2. **Naming Convention**: Use `SETTING_<KEY>` for VS Code configuration keys (e.g., `SETTING_BASE_URL`), `COMMAND_<NAME>` for command IDs (e.g., `COMMAND_REFRESH_MODELS`), `STATUS_<DESC>` for status/error IDs (e.g., `STATUS_CONNECTION_ERROR`), `POLICY_<NAME>` for policy strings (e.g., `POLICY_TRUNCATE_MIDDLE`), `TOOL_<NAME>` for tool names (e.g., `TOOL_READ_FILE`), `*_PATTERN` for regex patterns, and `DEFAULT_<DESC>` for default values.
+3. **Grouping**: Organize constants in `src/constants.ts` into clearly labeled sections (Settings, Commands, Status, Policies, Tools, Display, Patterns, Defaults, etc.) with blank-line separators.
+4. **What NOT to centralize**: VS Code contribution points in `package.json` must remain as literal strings (they are part of the extension manifest contract). Documentation strings in `README.md` and user-facing docs should remain as literals. Default configuration objects embedded in code (e.g., `vscode.workspace.getConfiguration()` default values) may stay inline if they are tightly coupled to a single function.
+5. **Import, Don't Duplicate**: When a file needs a constant, import it from `src/constants.ts` rather than redefining it locally. Never copy-paste a constant value into a new file.
+6. **Type Safety**: For string literal types used as discriminated unions (e.g., `ContextOverflowPolicy`), reference the constants in the type definition using `typeof` to keep the type in sync with the values.

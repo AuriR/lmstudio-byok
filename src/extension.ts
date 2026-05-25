@@ -1,8 +1,17 @@
 import * as vscode from 'vscode';
 import { LMStudioChatModelProvider } from './provider';
 import { registerLmStudioParticipant } from './participant';
-
-const COMMAND_MESSAGE_TIMEOUT_MS = 5000;
+import {
+	COMMAND_MESSAGE_TIMEOUT_MS,
+	COMMAND_REFRESH_MODELS,
+	COMMAND_RUN_PLANNER_SMOKE_TEST,
+	COMMAND_RUN_SMOKE_TEST,
+	COMMAND_SHOW_DOCUMENTATION,
+	COMMAND_SHOW_WELCOME,
+	COMMAND_TEST_CONNECTION,
+	STATUS_CONNECTION_ERROR,
+	STATUS_NO_MODELS_LOADED,
+} from './constants';
 
 function showTransientCommandMessage(message: string, kind: 'info' | 'error' = 'info'): void {
     const icon = kind === 'error' ? '$(error)' : '$(check)';
@@ -19,19 +28,19 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(participant);
 
 	// Command to refresh models
-	const refreshCommand = vscode.commands.registerCommand('lmstudio.refreshModels', () => {
+	const refreshCommand = vscode.commands.registerCommand(COMMAND_REFRESH_MODELS, () => {
 		provider.refreshModels();
         showTransientCommandMessage('LM Studio models refreshed');
 	});
 	context.subscriptions.push(refreshCommand);
 
 	// Command to test connection
-	const testConnectionCommand = vscode.commands.registerCommand('lmstudio.testConnection', async () => {
+	const testConnectionCommand = vscode.commands.registerCommand(COMMAND_TEST_CONNECTION, async () => {
 		try {
 			// Test the connection
 			const models = await provider.prepareLanguageModelChat({ silent: false }, new vscode.CancellationTokenSource().token);
 
-			if (models.some(m => m.id === 'connection-error' || m.id === 'no-models-loaded')) {
+			if (models.some(m => m.id === STATUS_CONNECTION_ERROR || m.id === STATUS_NO_MODELS_LOADED)) {
                 showTransientCommandMessage(`LM Studio connection failed. Found: ${models.map(m => m.name).join(', ')}`, 'error');
 			} else {
                 showTransientCommandMessage(`LM Studio connected successfully! Found ${models.length} models: ${models.map(m => m.name).join(', ')}`);
@@ -42,7 +51,7 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 	context.subscriptions.push(testConnectionCommand);
 
-    const smokeTestCommand = vscode.commands.registerCommand('lmstudio.runSmokeTest', async () => {
+    const smokeTestCommand = vscode.commands.registerCommand(COMMAND_RUN_SMOKE_TEST, async () => {
         const result = await provider.runDebugSmokeTest();
 
         if (result.success) {
@@ -54,7 +63,7 @@ export function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(smokeTestCommand);
 
-    const plannerSmokeTestCommand = vscode.commands.registerCommand('lmstudio.runPlannerSmokeTest', async () => {
+    const plannerSmokeTestCommand = vscode.commands.registerCommand(COMMAND_RUN_PLANNER_SMOKE_TEST, async () => {
         const result = await provider.runDebugPlannerSmokeTest();
 
         if (result.success) {
@@ -67,13 +76,13 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(plannerSmokeTestCommand);
 
     // Command to show documentation page
-    const showDocumentationCommand = vscode.commands.registerCommand('lmstudio.showDocumentation', () => {
+    const showDocumentationCommand = vscode.commands.registerCommand(COMMAND_SHOW_DOCUMENTATION, () => {
         showDocumentationPage();
     });
     context.subscriptions.push(showDocumentationCommand);
 
     // Backward-compatible alias for older command references
-    const showWelcomeAliasCommand = vscode.commands.registerCommand('lmstudio.showWelcome', () => {
+    const showWelcomeAliasCommand = vscode.commands.registerCommand(COMMAND_SHOW_WELCOME, () => {
         showDocumentationPage();
     });
     context.subscriptions.push(showWelcomeAliasCommand);
