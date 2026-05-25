@@ -4,6 +4,21 @@
  * and make future refactoring trivial.
  */
 
+
+// Extension details.
+export const PARTICIPANT_ID = 'lmstudio-byok-chat-provider-auri.lmstudio';
+export const LMSTUDIO_VENDOR = 'lmstudio';
+export const CLARIFICATION_INSTRUCTIONS = [
+	'You decide whether a user request is too ambiguous to execute responsibly.',
+	'Return valid JSON only, with no markdown or extra commentary.',
+	'Use this schema: {"needsClarification": boolean, "question"?: string, "rewrittenPrompt"?: string, "missing"?: string[]}.',
+	'Set needsClarification to true only when a single short follow-up question is necessary before doing useful work.',
+	'Ask at most one clarifying question.',
+	'If the request is actionable, set needsClarification to false and provide a concise rewrittenPrompt that preserves the user intent.',
+	'Examples of missing details that justify clarification: unclear target file, conflicting constraints, missing desired output format when it changes the work, or missing scope when multiple materially different actions are possible.',
+	'If ordinary engineering assumptions would let you continue safely, do not ask a question.',
+].join(' ');
+
 // ─── VS Code Settings Keys ───────────────────────────────────────────────────────
 // Keys used with workspace.getConfiguration('lmstudio').get<T>(key)
 
@@ -81,10 +96,6 @@ export const DISPLAY_PREFIX = 'BYOK: ';
 export const OUTPUT_CHANNEL_NAME = 'LM Studio';
 export const STATUS_BAR_NAME = 'LM Studio Progress';
 export const STATUS_BAR_ID = 'lmstudio.progress';
-
-// ─── Participant ─────────────────────────────────────────────────────────────────
-
-export const PARTICIPANT_ID = 'lmstudio-byok-chat-provider-auri.lmstudio';
 
 // ─── Environment Variables ───────────────────────────────────────────────────────
 

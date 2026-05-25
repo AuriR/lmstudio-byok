@@ -10,6 +10,7 @@ import { PlannerConfig, LmStudioMessage as PlannerLmStudioMessage } from './plan
 import { encode } from 'gpt-tokenizer';
 import {
 	CONFIGURATION_ROOT,
+	CONTEXT_BUDGET_RECENT_MESSAGE_COUNT,
 	DEFAULT_BASE_URL,
 	DEFAULT_CONTEXT_OVERFLOW_POLICY,
 	DEFAULT_MAX_RESPONSE_TOKENS,
@@ -20,13 +21,52 @@ import {
 	DEFAULT_TEMPERATURE,
 	DEFAULT_TOP_K,
 	DEFAULT_TOP_P,
-	CONTEXT_BUDGET_RECENT_MESSAGE_COUNT,
+	ENV_API_KEY,
+	MAX_TOKENS_OVERRIDE_PATTERN as maxTokensOverridePattern,
+	MAX_TOKENS_RESET_PATTERN as maxTokensResetPattern,
 	MIN_MESSAGE_TEXT_BUDGET_TOKENS,
+	OUTPUT_CHANNEL_NAME,
+	PLANNER_OVERRIDE_PATTERN as plannerOverridePattern,
+	POLICY_ROLLING_WINDOW,
+	POLICY_STOP_AT_LIMIT,
+	POLICY_TRUNCATE_MIDDLE,
+	SETTING_API_KEY,
+	SETTING_AUTO_CAVEMAN_PROMPTS,
+	SETTING_BASE_URL,
+	SETTING_BLOCK_OVERSIZED_REQUESTS,
+	SETTING_CONTEXT_OVERFLOW_POLICY,
+	SETTING_MODEL_TUNING_MAX_TOKENS_IN_RESPONSE_ENABLED,
+	SETTING_MODEL_TUNING_MAX_TOKENS_IN_RESPONSE_VALUE,
+	SETTING_MODEL_TUNING_MIN_P_ENABLED,
+	SETTING_MODEL_TUNING_MIN_P_VALUE,
+	SETTING_MODEL_TUNING_REPETITION_PENALTY_ENABLED,
+	SETTING_MODEL_TUNING_REPETITION_PENALTY_VALUE,
+	SETTING_MODEL_TUNING_TEMPERATURE_ENABLED,
+	SETTING_MODEL_TUNING_TEMPERATURE_VALUE,
+	SETTING_MODEL_TUNING_TOP_K_ENABLED,
+	SETTING_MODEL_TUNING_TOP_K_VALUE,
+	SETTING_MODEL_TUNING_TOP_P_ENABLED,
+	SETTING_MODEL_TUNING_TOP_P_VALUE,
+	SETTING_PERFORMANCE_OPTIMIZATIONS,
+	SETTING_PLANNER_ENABLED,
+	SETTING_PLANNER_FYI_INSTRUCTION_PATH,
+	SETTING_PLANNER_MAX_ITERATIONS,
+	SETTING_PLANNER_MAX_TOOL_RESULT_TOKENS,
+	SETTING_PLAY_TOKEN_THRESHOLD_SOUND,
+	SETTING_SYSTEM_PROMPT,
+	SETTING_TOGGLE_ALL_PERFORMANCE,
+	SETTING_TOKEN_BUDGETING,
+	SETTING_TOKEN_SOUND_THRESHOLD,
+	SETTING_VERBOSE_LOGGING,
+	SETTING_VERBOSE_PROGRESS_REPORTING,
+	SOUND_FILE_NAME,
+	STATUS_BAR_ID,
+	STATUS_BAR_NAME,
+	STATUS_CONNECTION_ERROR,
+	STATUS_NO_MODELS_LOADED,
+	STATUS_SERVER_NOT_STARTED,
 	USER_REQUEST_PATTERN as userRequestPattern,
 	REQUEST_HEADER_PATTERN as requestHeaderPattern,
-	PLANNER_OVERRIDE_PATTERN as plannerOverridePattern,
-	MAX_TOKENS_RESET_PATTERN as maxTokensResetPattern,
-	MAX_TOKENS_OVERRIDE_PATTERN as maxTokensOverridePattern,
 } from './constants';
 
 function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxOutputTokens: number, supportsTools = true, supportsImageInput = false): LanguageModelChatInformation {
@@ -49,23 +89,6 @@ function getChatModelInfo(id: string, name: string, maxInputTokens: number, maxO
 }
 
 const textDecoder = new TextDecoder();
-
-const userRequestPattern = /<userRequest>([\s\S]*?)<\/userRequest>/i;
-const requestHeaderPattern = /^(\s*Latest user request:\s*\r?\n)?/i;
-const plannerOverridePattern = /^\/(lmsplan|lmsnoplan)\b(?:[ \t]+|\r?\n+)*/i;
-const maxTokensResetPattern = /^\/lmsmaxtokensreset\b(?:[ \t]+|\r?\n+)*/i;
-const maxTokensOverridePattern = /^\/lmsmaxtokens\b(?:[ \t]+([^\s]+))?(?:[ \t]+|\r?\n+)*/i;
-const DEFAULT_MAX_TOOL_RESULT_TOKENS = 8000;
-const CONTEXT_BUDGET_RECENT_MESSAGE_COUNT = 4;
-const MIN_MESSAGE_TEXT_BUDGET_TOKENS = 128;
-const DEFAULT_BASE_URL = 'ws://localhost:1234';
-const DEFAULT_TEMPERATURE = 0.7;
-const DEFAULT_TOP_P = 0.8;
-const DEFAULT_TOP_K = 20;
-const DEFAULT_MIN_P = 0.05;
-const DEFAULT_REPETITION_PENALTY = 1.2;
-const DEFAULT_MAX_RESPONSE_TOKENS = 4096;
-const DEFAULT_SYSTEM_PROMPT = 'Think step-by-step. Break down the problem into detailed reasoning steps before answering.';
 
 type ContextOverflowPolicy = typeof POLICY_STOP_AT_LIMIT | typeof POLICY_TRUNCATE_MIDDLE | typeof POLICY_ROLLING_WINDOW;
 type CheckedNumericSetting = { enabled: boolean; value: number; };
@@ -881,7 +904,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_PERFORMANCE_OPTIMIZATIONS}`) ||
 				e.affectsConfiguration(`${CONFIGURATION_ROOT}.${SETTING_TOGGLE_ALL_PERFORMANCE}`) ||
 				e.affectsConfiguration(`${CONFIGURATION_ROOT}.planner`) ||
-				e.affectsConfiguration(`${CONFIGURATION_ROOT}.modelTuning')) {
+				e.affectsConfiguration(`${CONFIGURATION_ROOT}.modelTuning`)) {
 				this.log('Configuration changed, will refresh client on next request');
 				this.loadSettings();
 				// Reset the client so it gets recreated with new settings
@@ -1740,15 +1763,16 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			const matchedSentinel = normalizedVisibleText === SMOKE_TEST_SENTINEL;
 			const success = matchedSentinel && toolCalls.length === 0 && !hadStructuredMarkers;
 
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Model: ${selectedModel.id}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Model preference order: ${DEBUG_SMOKE_TEST_MODEL_PREFERENCE.join(', ')}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Planner enabled in settings: ${originalPlannerEnabled}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Planner exercised: false (forced direct mode for safety)`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Forced direct mode: true`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Tool calls observed: ${toolCalls.length === 0 ? 'none' : toolCalls.join(', ')}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Structured markers present after filtering: ${hadStructuredMarkers}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Sentinel matched exactly: ${matchedSentinel}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Smoke Test] Visible output: ${visibleText || '<empty>'}`);
+			const smokeTestTimestamp = new Date().toISOString();
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Model: ${selectedModel.id}`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Model preference order: ${DEBUG_SMOKE_TEST_MODEL_PREFERENCE.join(', ')}`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Planner enabled in settings: ${originalPlannerEnabled}`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Planner exercised: false (forced direct mode for safety)`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Forced direct mode: true`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Tool calls observed: ${toolCalls.length === 0 ? 'none' : toolCalls.join(', ')}`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Structured markers present after filtering: ${hadStructuredMarkers}`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Sentinel matched exactly: ${matchedSentinel}`);
+			this.output.appendLine(`[${smokeTestTimestamp}] [Smoke Test] Visible output: ${visibleText || '<empty>'}`);
 
 			return {
 				success,
@@ -1865,15 +1889,16 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			const toolCalls = planningResult.toolCalls.map(toolCall => toolCall.tool);
 			const success = planningResult.success && matchedSentinel && toolCalls.length > 0;
 
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Model: ${llmModel.identifier}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Model preference order: ${DEBUG_SMOKE_TEST_MODEL_PREFERENCE.join(', ')}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Planner enabled in settings: ${originalPlannerEnabled}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Planner exercised: true`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Allowed tools: ${READ_ONLY_PLANNER_SMOKE_TEST_TOOLS.join(', ')}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Iterations: ${planningResult.iterations}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Tool calls observed: ${toolCalls.length === 0 ? 'none' : toolCalls.join(', ')}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Sentinel matched exactly: ${matchedSentinel}`);
-			this.output.appendLine(`[${new Date().toISOString()}] [Planner Smoke Test] Final response: ${planningResult.response || '<empty>'}`);
+			const plannerSmokeTestTimestamp = new Date().toISOString();
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Model: ${llmModel.identifier}`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Model preference order: ${DEBUG_SMOKE_TEST_MODEL_PREFERENCE.join(', ')}`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Planner enabled in settings: ${originalPlannerEnabled}`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Planner exercised: true`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Allowed tools: ${READ_ONLY_PLANNER_SMOKE_TEST_TOOLS.join(', ')}`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Iterations: ${planningResult.iterations}`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Tool calls observed: ${toolCalls.length === 0 ? 'none' : toolCalls.join(', ')}`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Sentinel matched exactly: ${matchedSentinel}`);
+			this.output.appendLine(`[${plannerSmokeTestTimestamp}] [Planner Smoke Test] Final response: ${planningResult.response || '<empty>'}`);
 
 			return {
 				success,
