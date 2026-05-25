@@ -10,7 +10,7 @@
 		"type": "git",
 		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.5.9",
+	"version": "0.5.10",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -160,12 +160,6 @@
 					"description": "🛑 Block requests locally when they still exceed the estimated prompt budget after trimming. Disable this to let LM Studio attempt the request even if it may fail.",
 					"scope": "application"
 				},
-				"lmstudio.systemPrompt": {
-					"type": "string",
-					"default": "Think step-by-step. Break down the problem into detailed reasoning steps before answering.",
-					"description": "🧾 Optional system prompt prepended to LM Studio requests. Clear this value to stop sending a custom system prompt.",
-					"scope": "application"
-				},
 				"lmstudio.toggleAllPerformance": {
 					"type": "boolean",
 					"default": false,
@@ -175,7 +169,7 @@
 				"lmstudio.planner.enabled": {
 					"type": "boolean",
 					"default": false,
-					"description": "🧠 Enable the planning agent. When enabled, requests are routed through a ReAct-style planner that can use tools (file read/write, workspace search, VS Code commands) before returning a final answer. You can still override this per request with /lmsplan or /lmsnoplan.",
+					"description": "🧠 Enable the planning agent. When enabled, requests are routed through a ReAct-style planner that can use tools (file read/write, workspace search, VS Code commands) before returning a final answer.",
 					"scope": "application"
 				},
 				"lmstudio.planner.maxIterations": {
@@ -275,14 +269,14 @@
 					"lmstudio.modelTuning.maxTokensInResponse.enabled": {
 						"type": "boolean",
 						"default": false,
-						"description": "Enable a global max tokens in response override for all LM Studio responses. You can still override this for the current VS Code session with /lmsmaxtokens <number> and clear it with /lmsmaxtokensreset.",
+						"description": "Enable a global max tokens in response override for all LM Studio responses.",
 						"scope": "application"
 					},
 					"lmstudio.modelTuning.maxTokensInResponse.value": {
 						"type": "number",
 						"default": 4096,
 						"minimum": 1,
-						"description": "Maximum generated tokens to allow in a response. Only applied when the corresponding enable setting is checked. If LM Studio likely stops because of this cap, chat will now report that there were not enough tokens to finish the response.",
+						"description": "Maximum generated tokens to allow in a response. Only applied when the corresponding enable setting is checked.",
 						"scope": "application"
 					}
 				}
