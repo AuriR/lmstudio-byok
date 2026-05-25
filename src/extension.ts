@@ -43,7 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
 			if (models.some(m => m.id === STATUS_CONNECTION_ERROR || m.id === STATUS_NO_MODELS_LOADED)) {
                 showTransientCommandMessage(`LM Studio connection failed. Found: ${models.map(m => m.name).join(', ')}`, 'error');
 			} else {
-                showTransientCommandMessage(`LM Studio connected successfully! Found ${models.length} models: ${models.map(m => m.name).join(', ')}`);
+                showTransientCommandMessage(`LM Studio connected successfully! Found ${models.length} models.`);
 			}
 		} catch (error) {
             showTransientCommandMessage(`LM Studio connection test failed: ${error}`, 'error');
