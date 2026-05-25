@@ -146,6 +146,7 @@ function inferImageInputSupport(modelIdentifier: string): boolean {
 
 	// Prefer explicit multimodal markers over broad family names. Advertising image input
 	// for every Qwen/Llama/Gemma model causes false capability claims in the picker.
+	// Note that LM Studio's API doesn't return model capabilities, at least as of the time of this comment.
 	if (normalizedIdentifier.includes('llava') ||
 		normalizedIdentifier.includes('cogvlm') ||
 		normalizedIdentifier.includes('pixtral') ||
