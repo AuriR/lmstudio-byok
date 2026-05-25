@@ -8,13 +8,18 @@
 4. Data Model Details
 5. Authentication Details
 6. Third-Party Services/APIs and How They Integrate
-7. Chat Client Flow
-8. Screen Flows
-9. Important Application Entry Points
-10. Getting Started for Developers
-11. Key Business Rules
-12. Key Architectural Takeaways
-13. Glossary
+7. Performance Optimization Features
+8. Planner and Tuning Architecture
+9. Clarification Participant Architecture
+10. Chat Client Flow
+11. Screen Flows
+12. Important Application Entry Points
+13. Getting Started for Developers
+14. Key Business Rules
+15. Key Architectural Takeaways
+16. Configuration Details
+17. Adversarial Review Notes
+18. Glossary
 
 ## Revision History
 
@@ -26,12 +31,13 @@
 - 1.5 | 2026-05-24 | Copilot Agent | Clarified planner-mode user experience, status indicators, and documentation scope/limits
 - 1.6 | 2026-05-24 | Copilot Agent | Distinguished platform-backed planner behavior from extension-defined heuristic recovery
 - 1.7 | 2026-05-24 | Copilot Agent | Added per-request /plan and /noplan overrides and documented routing precedence
+- 1.8 | 2026-05-24 | Copilot Agent | Added LM Studio clarification participant architecture and updated chat flows
 
 ## Executive Overview
 
-This document provides a comprehensive architectural overview of the LM Studio BYOK extension for VS Code. The extension enables VS Code users to access local language models through the Language Model Chat Provider API, allowing seamless integration with LM Studio's local LLM capabilities.
+This document provides a comprehensive architectural overview of the LM Studio BYOK extension for VS Code. The extension enables VS Code users to access local language models through the Language Model Chat Provider API, and now also exposes a chat participant that can ask one clarifying question before continuing when the user request is too ambiguous to execute safely.
 
-The extension implements the VS Code LanguageModelChatProvider interface to register LM Studio models with the Copilot Chat system. It handles the translation between VS Code's chat message format and LM Studio's expected input format, including proper role mapping, content serialization, and metadata handling.
+The extension implements the VS Code LanguageModelChatProvider interface to register LM Studio models with the Copilot Chat system. It also implements a VS Code chat participant for a clarification-aware `@lmstudio` workflow. Together, these layers handle the translation between VS Code's chat message format and LM Studio's expected input format, proper role mapping, content serialization, metadata handling, and clarification checkpoints that survive across participant turns.
 
 Key features include:
 
@@ -44,6 +50,7 @@ Key features include:
 - Configurable token threshold sound notifications
 - Performance optimization features
 - Optional ReAct-style planner mode
+- Optional clarification-aware `@lmstudio` participant flow
 - Optional global model tuning overrides with per-setting enable flags
 - Heuristic image-input capability detection for common vision-model identifiers
 
@@ -54,7 +61,7 @@ Key features include:
 - **SDK**: LM Studio SDK v1.4.0
 - **Tokenization**: gpt-tokenizer
 - **Build System**: Node.js with npm
-- **API Version**: VS Code Language Model Chat Provider API 1.103+
+- **API Version**: VS Code Language Model Chat Provider API and Chat Participant API 1.103+
 - **Audio**: WAV file for sound notifications (Windows-specific)
 
 ## Data Model Details
@@ -101,6 +108,15 @@ The extension integrates with VS Code's Language Model Chat Provider API (versio
 - Model registration and discovery
 - Message handling for chat conversations
 - Context length and metadata management
+
+### VS Code Chat Participant API
+
+The extension also integrates with VS Code's Chat Participant API, which provides:
+
+- `@lmstudio` chat-participant registration and discovery
+- Participant-scoped chat history and metadata for clarification checkpoints
+- Follow-up suggestions after clarification or completion
+- A second user-facing entry path that can invoke LM Studio models through the language model API
 
 ### LM Studio SDK
 
@@ -155,46 +171,70 @@ Model tuning is orthogonal to both modes. Each tuning value is represented as an
 
 The debug-only smoke-test commands now validate both execution paths against a live LM Studio host: the direct smoke test verifies transport, shaping, and filtering, while the planner smoke test verifies at least one read-only tool call plus the exact planner sentinel. Existing output-channel logs already expose iterations, tool calls, and sentinel matching, so additional planner telemetry is optional rather than required.
 
+## Clarification Participant Architecture
+
+The extension now has a second chat entry path besides the plain model-provider flow: a chat participant contributed as `@lmstudio`. This participant does not replace the provider. Instead, it orchestrates a clarification checkpoint before it sends a request through the language model API.
+
+The clarification path works as follows:
+
+1. The participant resolves an LM Studio model. If the user already selected an LM Studio model, it reuses that model. Otherwise it tries to select an LM Studio model by vendor, falling back to the first available LM Studio model.
+2. Before answering, the participant runs a small LM-assisted classifier prompt that must return JSON describing whether a clarifying question is needed.
+3. If the classifier says the request is actionable, the participant forwards the request to the resolved LM Studio model immediately.
+4. If the classifier says the request is ambiguous, the participant asks one short question, stores the original prompt and missing-detail metadata in `ChatResult.metadata`, and stops.
+5. On the next `@lmstudio` turn, the participant checks the participant-scoped chat history for the pending clarification metadata, combines the original prompt with the user's follow-up answer, and then continues the LM Studio request.
+
+This behavior is intentionally participant-scoped. VS Code only provides a participant with the history of turns addressed to that participant, so clarification checkpoints are preserved only within `@lmstudio` conversation turns.
+
+The ambiguity check is intentionally tolerant of local-model formatting problems. The participant first tries to parse a strict JSON decision. If that fails, it falls back to conservative heuristics that ask for a clarification on terse or targetless prompts such as "fix this" or "update it".
+
+This design provides a practical approximation of Copilot's ask-questions flow, but it is not the same as a native provider-side pause-and-resume API. The plain LM Studio model-provider path still behaves like a direct language-model request without a built-in clarification checkpoint.
+
 ## Chat Client Flow
 
-The chat client flow starts in VS Code's chat UI, moves through the provider's request normalization and budget enforcement steps, then streams the model response back into the chat window. The provider is responsible for converting VS Code chat messages into LM Studio's chat format, applying local safeguards such as tool-result truncation and prompt budgeting, and then passing the prepared request to LM Studio.
+The chat client flow now has two top-level routes. The first is the direct provider route, where the user selects an LM Studio model in the picker and the request is sent through the provider immediately. The second is the clarification-aware participant route, where the user invokes `@lmstudio` and the participant may ask one clarifying question before it continues.
 
 At a high level, the flow is:
 
 1. The user enters a message in the VS Code chat client.
-2. VS Code sends the accumulated chat history and request options to the LM Studio chat provider.
-3. The provider serializes message parts, preserves system messages, and prioritizes the explicit user request.
-4. The provider applies local performance features such as caveman prompting, token budgeting, history trimming, oversized-request blocking, and any enabled global model tuning overrides.
-5. The provider chooses either direct mode or planner mode, using `/plan` or `/noplan` as a per-request override when present and otherwise falling back to `lmstudio.planner.enabled`.
-6. In direct mode, the provider sends the prepared request to LM Studio and streams fragments back to VS Code.
-7. In planner mode, the provider enters a ReAct loop that may execute built-in workspace tools before returning a final answer.
-8. VS Code renders text, tool calls, and status updates in the chat window and status bar.
+2. VS Code routes the request either to the plain LM Studio model-provider path or to the `@lmstudio` participant path.
+3. In the provider path, the provider serializes message parts, preserves system messages, and prioritizes the explicit user request.
+4. In the participant path, the participant resolves an LM Studio model and decides whether a clarifying question is required.
+5. The provider path applies local performance features such as caveman prompting, token budgeting, history trimming, oversized-request blocking, and any enabled global model tuning overrides.
+6. The provider path chooses either direct mode or planner mode, using `/plan` or `/noplan` as a per-request override when present and otherwise falling back to `lmstudio.planner.enabled`.
+7. The participant path either asks one clarifying question and stores metadata, or forwards the actionable request to an LM Studio model.
+8. VS Code renders text, follow-up prompts, tool calls, and status updates in the chat window and status bar.
 
 ```mermaid
 flowchart TD
-    A[User enters chat message in VS Code] --> B[VS Code gathers chat history and model options]
-    B --> C[LMStudioChatModelProvider.provideLanguageModelChatResponse]
-    C --> D[Normalize roles and serialize message parts]
-    D --> E[Apply local safeguards, token budgeting, and opt-in tuning overrides]
-    E --> F{Fits local prompt budget?}
-    F -- No, block enabled --> G[Post chat warning and stop before LM Studio call]
-    F -- No, block disabled --> H[Continue with warning]
-    F -- Yes --> I{Planner enabled for this request?}
-    H --> I
-    I -- No --> J[Send prepared chat history to LM Studio respond]
-    I -- Yes --> K[Run local ReAct planner loop]
-    J --> L[LM Studio generates and streams fragments]
-    K --> M[Planner may call built-in workspace tools]
-    M --> N[Planner returns final answer]
-    L --> O[Provider forwards text and tool calls to VS Code]
-    N --> O
-    O --> P[Chat window displays response and notices]
-    O --> Q[Status bar and output channel show progress/logs]
+    A[User enters chat message in VS Code] --> B{Direct model or @lmstudio participant?}
+    B -- Direct LM Studio model --> C[LMStudioChatModelProvider.provideLanguageModelChatResponse]
+    B -- @lmstudio participant --> D[LM Studio participant handler]
+    C --> E[Normalize roles and serialize message parts]
+    E --> F[Apply local safeguards, token budgeting, and opt-in tuning overrides]
+    F --> G{Fits local prompt budget?}
+    G -- No, block enabled --> H[Post chat warning and stop before LM Studio call]
+    G -- No, block disabled --> I[Continue with warning]
+    G -- Yes --> J{Planner enabled for this request?}
+    I --> J
+    J -- No --> K[Send prepared chat history to LM Studio respond]
+    J -- Yes --> L[Run local ReAct planner loop]
+    K --> M[LM Studio generates and streams fragments]
+    L --> N[Planner may call built-in workspace tools]
+    N --> O[Planner returns final answer]
+    D --> P[Resolve LM Studio model]
+    P --> Q{Need one clarifying question?}
+    Q -- Yes --> R[Ask question and store clarification metadata]
+    Q -- No --> S[Send actionable request through LM Studio model API]
+    S --> T[Participant streams model response]
+    M --> U[VS Code renders provider output]
+    O --> U
+    R --> V[VS Code waits for next @lmstudio reply]
+    T --> W[VS Code renders participant output]
 ```
 
 ## Screen Flows
 
-### Authenticated User Flow
+### Direct Model Picker Flow
 
 ```mermaid
 flowchart TD
@@ -202,22 +242,28 @@ flowchart TD
     B --> C[LM Studio Models Visible]
     C --> D[User Selects Model]
     D --> E[Chat Started]
-    E --> F[Messages Sent to LM Studio]
-    F --> G[Response Received]
-    G --> H[Response Displayed]
+    E --> F[Provider Normalizes Request]
+    F --> G{Planner enabled for this turn?}
+    G -- No --> H[Direct LM Studio response]
+    G -- Yes --> I[Planner loop runs]
+    H --> J[Response Displayed]
+    I --> J
 ```
 
-### Guest User Flow
+### Clarification Participant Flow
 
 ```mermaid
 flowchart TD
-    A[VS Code Copilot Chat] --> B{Model Picker}
-    B --> C[LM Studio Models Visible]
-    C --> D[User Selects Model]
-    D --> E[Chat Started]
-    E --> F[Messages Sent to LM Studio]
-    F --> G[Response Received]
-    G --> H[Response Displayed]
+    A[User invokes @lmstudio] --> B[Participant resolves LM Studio model]
+    B --> C{Request ambiguous?}
+    C -- No --> D[Participant forwards request immediately]
+    C -- Yes --> E[Participant asks one question]
+    E --> F[Clarification metadata stored in chat result]
+    F --> G[User replies to @lmstudio]
+    G --> H[Participant combines original prompt and answer]
+    H --> I[LM Studio response returned]
+    D --> J[Response Displayed]
+    I --> J
 ```
 
 ### Progress Reporting Flow
@@ -237,9 +283,10 @@ flowchart TD
 
 1. **extension.ts** - Extension activation and provider registration
 2. **provider.ts** - LanguageModelChatProvider implementation
-3. **package.json** - Extension manifest with model contributions and configuration
-4. **src/planner/plan.ts** - Planner loop, tool-call parsing, and final-response handling
-5. **src/planner/tools.ts** - Built-in planner tool implementations for workspace interaction
+3. **src/participant.ts** - Chat participant implementation for clarification checkpoints and LM Studio model forwarding
+4. **package.json** - Extension manifest with model and chat-participant contributions plus configuration
+5. **src/planner/plan.ts** - Planner loop, tool-call parsing, and final-response handling
+6. **src/planner/tools.ts** - Built-in planner tool implementations for workspace interaction
 
 ## Getting Started for Developers
 
@@ -269,6 +316,8 @@ flowchart TD
 8. Oversized requests may be blocked locally before the LM Studio call when the estimated prompt budget still cannot be satisfied
 9. Planner mode runs only when explicitly enabled and uses built-in planner tools instead of forwarded VS Code chat tools
 10. Model tuning overrides are only sent when their matching enable checkbox is on
+11. The clarification-aware ask-questions behavior is available through the `@lmstudio` participant path, not through the plain model-provider request path
+12. A clarification checkpoint can only resume inside later `@lmstudio` turns because participant metadata is participant-scoped
 
 ## Key Architectural Takeaways
 
@@ -281,7 +330,8 @@ flowchart TD
 7. Audio notifications are Windows-specific implementation
 8. Context control is split between provider-side trimming and LM Studio's backend overflow policy
 9. Planner mode adds a second execution path after provider-side normalization and budget enforcement
-10. Request-time observability depends on verbose logging and verbose progress settings, including active tuning summaries
+10. The clarification participant adds a second chat integration surface without changing the direct provider semantics
+11. Request-time observability depends on verbose logging and verbose progress settings, including active tuning summaries
 
 ## Configuration Details
 
@@ -319,6 +369,9 @@ The current implementation is functional, but there are a few deliberate tradeof
 3. Tuning overrides are consistently requested, but the final behavior still depends on LM Studio backend support for each prediction parameter.
 4. Provider-side budget enforcement still occurs before planner mode starts, so a sufficiently large conversation can be blocked before the planner gets a chance to iterate.
 5. Image-input capability is still inferred heuristically from model identifiers, so the provider may over-advertise vision support until capability detection is tightened.
+6. The clarification participant uses one extra model request to classify ambiguity before answering, which adds latency and can misclassify borderline prompts.
+7. Clarification checkpoints depend on participant-scoped metadata. If the user switches away from `@lmstudio`, the pending clarification is intentionally not resumed.
+8. The participant's fallback heuristics are conservative and may occasionally ask for clarification on prompts that an expert human would infer successfully.
 
 ### Environment Variables
 

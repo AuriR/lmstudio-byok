@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LMStudioChatModelProvider } from './provider';
+import { registerLmStudioParticipant } from './participant';
 
 const COMMAND_MESSAGE_TIMEOUT_MS = 5000;
 
@@ -10,10 +11,12 @@ function showTransientCommandMessage(message: string, kind: 'info' | 'error' = '
 
 export function activate(context: vscode.ExtensionContext) {
     const provider = new LMStudioChatModelProvider(context.extensionPath);
+    const participant = registerLmStudioParticipant(context);
 
 	// Register the chat model provider
 	const disposable = vscode.lm.registerLanguageModelChatProvider('lmstudio', provider);
 	context.subscriptions.push(disposable);
+    context.subscriptions.push(participant);
 
 	// Command to refresh models
 	const refreshCommand = vscode.commands.registerCommand('lmstudio.refreshModels', () => {
@@ -248,6 +251,17 @@ function getDocumentationContent(): string {
             <p>If you want to force planner mode for one request, start the prompt with <strong>/plan</strong>. If you want to bypass planner mode for one request, start the prompt with <strong>/noplan</strong>.</p>
         </div>
 
+        <div class="step">
+            <div class="step-number">Step 8: Use Clarification When Needed</div>
+            <p>If you want LM Studio to stop and ask for one missing detail before it proceeds, invoke the chat participant with <strong>@lmstudio</strong>.</p>
+            <ul>
+                <li>Use <strong>@lmstudio</strong> for the clarification-aware flow</li>
+                <li>Use <strong>@lmstudio /clarify</strong> if you want to be explicit about that path</li>
+                <li>If the request is actionable, the participant forwards it immediately</li>
+                <li>If the request is too ambiguous, the participant asks one short question and resumes after your next reply</li>
+            </ul>
+        </div>
+
         <h2>⚙️ Configuration (Optional)</h2>
 
         <p>You can customize settings in VS Code Settings (Ctrl+,) by searching for "LM Studio":</p>
@@ -255,6 +269,7 @@ function getDocumentationContent(): string {
         <div class="settings-code">{
   "lmstudio.baseUrl": "ws://localhost:1234",
   "lmstudio.apiKey": "your-api-key-here",
+    "lmstudio.systemPrompt": "Think step-by-step. Break down the problem into detailed reasoning steps before answering.",
   "lmstudio.verboseLogging": false,
   "lmstudio.verboseProgressReporting": false,
   "lmstudio.playTokenThresholdSound": false,
@@ -281,6 +296,16 @@ function getDocumentationContent(): string {
             <strong>Note:</strong> API key is optional for local instances. Only needed if you're connecting to a remote LM Studio server that requires authentication. By default, LM Studio does not require an API key.
         </div>
 
+        <div class="step">
+            <div class="step-number">Custom System Prompt</div>
+            <p>You can set <code>lmstudio.systemPrompt</code> to prepend your own system instruction to LM Studio requests.</p>
+            <ul>
+                <li>Default: <code>Think step-by-step. Break down the problem into detailed reasoning steps before answering.</code></li>
+                <li>Clear the setting to an empty string if you do not want to send a custom system prompt</li>
+                <li>Copilot instructions and other VS Code instruction layers are forwarded separately as system-role messages when VS Code includes them</li>
+            </ul>
+        </div>
+
         <h2>⌨️ Keyboard Shortcuts</h2>
         <p>
             <strong>Commands available:</strong><br>
@@ -300,6 +325,17 @@ function getDocumentationContent(): string {
                 <li>If neither prefix is present, the extension uses the saved <code>lmstudio.planner.enabled</code> setting</li>
             </ul>
             <p>These prefixes are stripped before the request is sent to the model, so they act as local routing hints rather than part of the prompt content.</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Clarification Flow</div>
+            <p>The <strong>@lmstudio</strong> participant is the extension's clarification-aware chat path.</p>
+            <ul>
+                <li>It is separate from the plain LM Studio model-provider request path</li>
+                <li>It asks at most one targeted clarifying question before continuing</li>
+                <li>It resumes by combining your follow-up answer with the original prompt on the next <strong>@lmstudio</strong> turn</li>
+                <li>If the selected chat model is not from LM Studio, it tries to switch to an LM Studio model automatically</li>
+            </ul>
         </div>
 
         <h2>🫤 Troubleshooting</h2>
@@ -323,6 +359,7 @@ function getDocumentationContent(): string {
                 <li><strong>Weird response formatting:</strong> The extension now filters out model artifacts automatically</li>
                 <li><strong>Planner parse warning on the first round:</strong> Some local models need one retry before they emit valid structured output. If the planner later executes a tool and reaches the sentinel, that warning is recoverable.</li>
                 <li><strong>Need planner mode only sometimes?:</strong> Use <code>/plan</code> or <code>/noplan</code> at the start of the prompt instead of changing the global planner setting back and forth.</li>
+                <li><strong>Clarification did not resume?:</strong> Make sure your follow-up reply is still addressed to <code>@lmstudio</code>. The stored checkpoint belongs to that participant thread.</li>
                 <li><strong>Slow responses:</strong> Try a smaller model or check your system resources</li>
                 <li><strong>Ideal Context Size:</strong> I've found context size of 128K tokens for my use cases, but YMMV</li>
                 <li><strong>LM Studio Context Size Errors:</strong> Increase context size in LM Studio for the selected model</li>
@@ -397,6 +434,17 @@ function getDocumentationContent(): string {
             <p>The debug-only smoke test command does <strong>not</strong> exercise planner mode. It forces a safe direct request and expects the exact sentinel response <code>SMOKE_TEST_OK</code>.</p>
             <p>The separate planner smoke test command exercises planner mode with a read-only tool allow-list and expects the exact sentinel response <code>PLANNER_SMOKE_TEST_OK</code>.</p>
             <p>Both debug commands have now been validated against a live LM Studio host. The current output already logs planner iterations, tool calls, and sentinel matching, so extra planner telemetry is optional rather than required.</p>
+        </div>
+
+        <div class="step">
+            <div class="step-number">Clarification Participant</div>
+            <p>The new <strong>@lmstudio</strong> participant approximates Copilot's ask-questions flow for local models.</p>
+            <ul>
+                <li>It runs a small ambiguity check before forwarding the request to LM Studio</li>
+                <li>If the model classifier returns malformed output, the extension falls back to conservative heuristics</li>
+                <li>It asks one question, stores the checkpoint in participant metadata, and resumes on your next answer</li>
+                <li>It does not change how the plain LM Studio model-provider path behaves in the picker</li>
+            </ul>
         </div>
 
         <div class="success">

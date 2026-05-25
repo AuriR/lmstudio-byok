@@ -43,6 +43,7 @@ const DEFAULT_TOP_K = 20;
 const DEFAULT_MIN_P = 0.05;
 const DEFAULT_REPETITION_PENALTY = 1.2;
 const DEFAULT_MAX_RESPONSE_TOKENS = 4096;
+const DEFAULT_SYSTEM_PROMPT = 'Think step-by-step. Break down the problem into detailed reasoning steps before answering.';
 
 type ContextOverflowPolicy = 'stopAtLimit' | 'truncateMiddle' | 'rollingWindow';
 type CheckedNumericSetting = { enabled: boolean; value: number; };
@@ -498,6 +499,13 @@ function toLmStudioMessage(message: LanguageModelChatRequestMessage, toolResultT
 	};
 }
 
+function createSystemTextMessage(text: string): Extract<LmStudioMessage, { role: 'system' }> {
+	return {
+		role: 'system',
+		content: [{ type: 'text', text }],
+	};
+}
+
 type LmStudioMessage = ReturnType<typeof toLmStudioMessage>;
 type LmStudioChatHistory = { messages: LmStudioMessage[]; };
 
@@ -732,6 +740,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 	private tokenBudgeting = false;
 	private contextOverflowPolicy: ContextOverflowPolicy = DEFAULT_CONTEXT_OVERFLOW_POLICY;
 	private blockOversizedRequests = true;
+	private configuredSystemPrompt = DEFAULT_SYSTEM_PROMPT;
 	private plannerEnabled = false;
 	private plannerMaxIterations = 10;
 	private plannerMaxToolResultTokens = DEFAULT_MAX_TOOL_RESULT_TOKENS;
@@ -769,6 +778,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 				e.affectsConfiguration('lmstudio.tokenBudgeting') ||
 				e.affectsConfiguration('lmstudio.contextOverflowPolicy') ||
 				e.affectsConfiguration('lmstudio.blockOversizedRequests') ||
+				e.affectsConfiguration('lmstudio.systemPrompt') ||
 				e.affectsConfiguration('lmstudio.performanceOptimizations') ||
 				e.affectsConfiguration('lmstudio.toggleAllPerformance') ||
 				e.affectsConfiguration('lmstudio.planner') ||
@@ -798,6 +808,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			this.performanceOptimizations = !!config.get<boolean>('performanceOptimizations');
 			this.contextOverflowPolicy = normalizeContextOverflowPolicy(config.get<string>('contextOverflowPolicy', DEFAULT_CONTEXT_OVERFLOW_POLICY));
 			this.blockOversizedRequests = config.get<boolean>('blockOversizedRequests', true);
+			this.configuredSystemPrompt = config.get<string>('systemPrompt', DEFAULT_SYSTEM_PROMPT).trim();
 			
 			// Handle toggle all performance setting
 			const toggleAll = !!config.get<boolean>('toggleAllPerformance');
@@ -854,6 +865,7 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 			this.tokenBudgeting = false;
 			this.contextOverflowPolicy = DEFAULT_CONTEXT_OVERFLOW_POLICY;
 			this.blockOversizedRequests = true;
+			this.configuredSystemPrompt = DEFAULT_SYSTEM_PROMPT;
 			this.toggleAllPerformance = false;
 			this.plannerEnabled = false;
 			this.plannerMaxIterations = 10;
@@ -940,6 +952,14 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 
 	private getWorkspaceRoot(): string | undefined {
 		return workspace.workspaceFolders?.[0]?.uri.fsPath;
+	}
+
+	private shouldInjectConfiguredSystemPrompt(requestInitiator: string | undefined): boolean {
+		if (!this.configuredSystemPrompt) {
+			return false;
+		}
+
+		return requestInitiator !== 'lmstudio.debugSmokeTest' && requestInitiator !== 'lmstudio.debugPlannerSmokeTest';
 	}
 
 	private async invokePlannerModel(
@@ -1819,14 +1839,20 @@ export class LMStudioChatModelProvider implements LanguageModelChatProvider {
 		// Convert VS Code messages to LM Studio chat format
 		let currentContextLength = model.maxInputTokens;
 		const maxToolResultTokens = Math.max(1200, Math.min(DEFAULT_MAX_TOOL_RESULT_TOKENS, Math.floor(model.maxInputTokens * 0.08)));
-		const baseChatHistory: LmStudioChatHistory = {
-			messages: messages.map((msg, index) => {
+		const convertedMessages = messages.map((msg, index) => {
 			const convertedMessage = toLmStudioMessage(msg, maxToolResultTokens);
 			const preview = JSON.stringify(convertedMessage).substring(0, 160);
 			this.log(`Message ${index}: role=${msg.role}->${convertedMessage.role} parts=${msg.content.length} payload=${preview}${preview.length >= 160 ? '...' : ''}`);
 			return convertedMessage;
-			}),
+		});
+		const baseChatHistory: LmStudioChatHistory = {
+			messages: this.shouldInjectConfiguredSystemPrompt(options.requestInitiator)
+				? [createSystemTextMessage(this.configuredSystemPrompt), ...convertedMessages]
+				: convertedMessages,
 		};
+		if (this.shouldInjectConfiguredSystemPrompt(options.requestInitiator)) {
+			this.log(`Injected configured system prompt (${estimateTokenCount(this.configuredSystemPrompt)} tokens)`);
+		}
 		const plannerOverrideResult = applyPlannerModeOverrideToChatHistory(baseChatHistory);
 		const chatHistory = plannerOverrideResult.chatHistory;
 		const effectivePlannerEnabled = plannerOverrideResult.override === 'plan'

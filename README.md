@@ -11,6 +11,7 @@ This VS Code extension provides access to local LLM models running in LM Studio,
 - �️ **Vision Support**: Heuristic image-input capability detection for common vision-model identifiers
 - �🔌 **Easy Setup**: Minimal configuration required
 - 🏷️ **Model Variety**: Support for Llama, Qwen, CodeGemma, Phi, and other popular models
+- ❓ **Clarification Participant**: An `@lmstudio` chat participant can pause on ambiguity, ask one targeted follow-up question, and continue on the next turn
 - 🧠 **Performance Tuning**: Advanced optimizations including token budgeting, caveman prompts, and more
 - 🧭 **Planner Mode**: Optional ReAct-style planning loop that can inspect the workspace, use built-in tools, and iterate before producing a final answer
 - 🎛️ **Global Model Tuning**: Optional per-setting overrides for temperature, top-p, top-k, min-p, repetition penalty, and max response tokens
@@ -32,12 +33,38 @@ Once configured, you can use LM Studio models in:
 - **VS Code Chat**: Access through the chat interface
 - **Other Extensions**: Any extension using the VS Code Language Model API
 
+If you want LM Studio to stop and ask for one missing detail before proceeding, use the chat participant path instead of the plain model-provider path:
+
+- Type `@lmstudio` in chat to invoke the LM Studio participant
+- Optionally use `@lmstudio /clarify` as an explicit shortcut to the same clarification-aware flow
+- When the request is actionable, the participant sends it straight to LM Studio
+- When the request is materially ambiguous, the participant asks one clarifying question, stores that checkpoint in chat metadata, and resumes after your next reply
+
 Per-request planner overrides are also available in chat:
 
 - Start a prompt with `/plan` to force planner mode for that one request, even if `lmstudio.planner.enabled` is off.
 - Start a prompt with `/noplan` to force direct mode for that one request, even if `lmstudio.planner.enabled` is on.
 
 These prefixes are stripped before the request is sent to the model. The global planner setting still acts as the default when neither prefix is present.
+
+## Clarification Participant
+
+The `@lmstudio` participant is the extension's approximation of Copilot's built-in ask-questions behavior.
+
+How it works:
+
+1. The participant first checks whether the request is missing a detail that would materially change the work.
+2. If the request is clear enough, it forwards the prompt to an LM Studio model immediately.
+3. If the request is too ambiguous, it asks one short follow-up question and waits.
+4. On your next reply to `@lmstudio`, it combines the original prompt with your clarification and continues.
+
+Current scope and limits:
+
+1. This flow is available through `@lmstudio`, not through the plain LM Studio model-provider request path in the picker.
+2. The participant asks at most one clarifying question per checkpoint.
+3. The ambiguity check uses a small LM-assisted JSON classifier with a heuristic fallback for malformed local-model output.
+4. The participant preserves only its own chat history, because VS Code participants only receive turns addressed to that participant.
+5. If the currently selected chat model is not an LM Studio model, the participant tries to select an LM Studio model automatically before responding.
 
 ## Configuration Settings
 
@@ -47,6 +74,7 @@ Press Ctrl-, for VS Code preferences and select LM Studio to update these easily
 
 - `lmstudio.baseUrl`: Base URL for LM Studio server (default: "<http://localhost:1234>")
 - `lmstudio.apiKey`: API key for authentication (optional for local instances)
+- `lmstudio.systemPrompt`: Optional system prompt prepended to LM Studio requests. Defaults to `Think step-by-step. Break down the problem into detailed reasoning steps before answering.` Clear it to stop sending a custom system prompt.
 - `lmstudio.verboseLogging`: Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting (default: false)
 - `lmstudio.verboseProgressReporting`: Show detailed LM Studio prompt/generation progress in the status bar, token usage, and output channel (default: false) - Fun to watch 💰🪙 **Tokenmaxxing!** 🪙💰
 - `lmstudio.playTokenThresholdSound`: Play a short cash-register style completion sound when a request exceeds the configured token threshold (default: false)
@@ -80,6 +108,8 @@ Each model-tuning override is only enforced when its matching `.enabled` setting
 - `lmstudio.modelTuning.maxTokensInResponse.enabled` / `value`: Optional global response-token cap (default value: 4096)
 
 When verbose logging or verbose progress reporting is enabled, the extension logs which of these overrides were active for each request.
+
+Copilot instructions and other VS Code-provided instruction layers currently arrive at this provider as system-role chat messages, and this extension preserves those as LM Studio system messages. The custom `lmstudio.systemPrompt` setting is added as another system message ahead of the request when it is non-empty.
 
 **Where can I see prompt progress bar and token count?**: Bottom left of editor window, not in the chat window.
 
@@ -127,6 +157,7 @@ Current implementation risks worth keeping in mind:
 2. The planner now explains its final outcome in the chat response and surfaces tool calls/results live in the transcript, but it still does not provide a dedicated Copilot-style plan pane with editable step tracking.
 3. Global tuning overrides are requested consistently, but LM Studio or the loaded backend may still clamp unsupported values.
 4. Image-input support is currently inferred from model identifiers, so treat vision capability as heuristic until the provider can verify it more precisely.
+5. The clarification participant is an approximation of Copilot's built-in ask-questions UX, not the same native provider flow. It works through `@lmstudio` chat turns and stored participant metadata.
 
 ## Debug Smoke Test
 
@@ -159,6 +190,12 @@ Current validation status:
 - Ensure LM Studio is running and server is started
 - Check VS Code Developer Console for errors
 - Verify the extension compiled successfully (`npm run compile`)
+
+### `@lmstudio` does not continue after I answer
+
+- Make sure your follow-up reply is still addressed to `@lmstudio`
+- If you switched back to a plain model-provider chat turn, the participant-specific clarification checkpoint will not be used
+- If no LM Studio models are currently available, the participant cannot resume and will report that explicitly
 
 ### Connection errors
 

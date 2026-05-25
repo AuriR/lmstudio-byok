@@ -10,7 +10,7 @@
 		"type": "git",
 		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.5.6",
+	"version": "0.5.9",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -33,6 +33,21 @@
 		"theme": "dark"
 	},
 	"contributes": {
+		"chatParticipants": [
+			{
+				"id": "lmstudio-byok-chat-provider-auri.lmstudio",
+				"name": "lmstudio",
+				"fullName": "LM Studio",
+				"description": "Ask LM Studio and let it request one missing detail before it proceeds",
+				"isSticky": true,
+				"commands": [
+					{
+						"name": "clarify",
+						"description": "Route the prompt through LM Studio with a clarification checkpoint"
+					}
+				]
+			}
+		],
 		"languageModelChatProviders": [
 			{
 				"vendor": "lmstudio",
@@ -143,6 +158,12 @@
 					"type": "boolean",
 					"default": true,
 					"description": "🛑 Block requests locally when they still exceed the estimated prompt budget after trimming. Disable this to let LM Studio attempt the request even if it may fail.",
+					"scope": "application"
+				},
+				"lmstudio.systemPrompt": {
+					"type": "string",
+					"default": "Think step-by-step. Break down the problem into detailed reasoning steps before answering.",
+					"description": "🧾 Optional system prompt prepended to LM Studio requests. Clear this value to stop sending a custom system prompt.",
 					"scope": "application"
 				},
 				"lmstudio.toggleAllPerformance": {
