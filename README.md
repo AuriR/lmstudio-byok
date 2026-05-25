@@ -5,16 +5,16 @@ This VS Code extension provides access to local LLM models running in LM Studio,
 ## Features
 
 - 🖥️ **Local Inference**: Run models completely locally for full privacy
-- 🚀 **High Performance**: Direct integration with LM Studio for optimal performance
+- 🚀 **High Performance**: Direct integration with LM Studio for optimal performance, and used by the developer - "eat your own dog food" approach
 - 🔄 **Streaming Responses**: Real-time response streaming
 - 🛠️ **Tool Calling**: Function calling support (if supported by the model)
 - �️ **Vision Support**: Heuristic image-input capability detection for common vision-model identifiers
 - �🔌 **Easy Setup**: Minimal configuration required
 - 🏷️ **Model Variety**: Support for Llama, Qwen, CodeGemma, Phi, and other popular models
-- ❓ **Clarification Participant**: An `@lmstudio` chat participant can pause on ambiguity, ask one targeted follow-up question, and continue on the next turn
 - 🧠 **Performance Tuning**: Advanced optimizations including token budgeting, caveman prompts, and more
 - 🧭 **Planner Mode**: Optional ReAct-style planning loop that can inspect the workspace, use built-in tools, and iterate before producing a final answer
 - 🎛️ **Global Model Tuning**: Optional per-setting overrides for temperature, top-p, top-k, min-p, repetition penalty, and max response tokens
+- ❓ **Clarification Participant**: An `@lmstudio` chat participant can pause on ambiguity, ask one targeted follow-up question, and continue on the next turn
 
 ## Prerequisites
 
@@ -82,8 +82,8 @@ Press Ctrl-, for VS Code preferences and select LM Studio to update these easily
 
 ### Performance Tuning Settings
 
-- `lmstudio.autoCavemanPrompts`: Prepends a system instruction that asks the model to be concise and preserve essentials. This is a lightweight behavior hint, not a true prompt compaction pass. (default: false)
 - `lmstudio.performanceOptimizations`: Master gate for implemented performance features. When false, feature-specific settings such as caveman prompts and token budgeting are ignored. (default: true)
+- `lmstudio.autoCavemanPrompts`: Prepends a system instruction that asks the model to be concise and preserve essentials. This is a lightweight behavior hint, not a true prompt compaction pass. (default: false)
 - `lmstudio.tokenBudgeting`: Estimates prompt plus tool token usage before send, shortens older context when needed, and logs a warning when the request approaches the model context window. (default: false)
 - `lmstudio.contextOverflowPolicy`: Dropdown that chooses how LM Studio should handle any overflow that remains after provider-side trimming: `stopAtLimit`, `truncateMiddle`, or `rollingWindow`. (default: `truncateMiddle`)
 - `lmstudio.blockOversizedRequests`: Blocks requests locally when they still exceed the estimated prompt budget after trimming. Disable this to let LM Studio attempt the request anyway, even if it may fail. (default: true)
@@ -98,7 +98,7 @@ Press Ctrl-, for VS Code preferences and select LM Studio to update these easily
 
 ### Model Tuning Settings
 
-Each model-tuning override is only enforced when its matching `.enabled` setting is checked.
+You may want to fine-trune the model so you can limit redundant thinking, get more predictable results, and so forth. Each model-tuning override is only enforced when its matching `.enabled` setting is checked.
 
 - `lmstudio.modelTuning.temperature.enabled` / `value`: Optional global temperature override in the range 0.0-1.0
 - `lmstudio.modelTuning.topP.enabled` / `value`: Optional global top-p override (default value: 0.8)
@@ -107,19 +107,15 @@ Each model-tuning override is only enforced when its matching `.enabled` setting
 - `lmstudio.modelTuning.repetitionPenalty.enabled` / `value`: Optional global repetition penalty override (default value: 1.2)
 - `lmstudio.modelTuning.maxTokensInResponse.enabled` / `value`: Optional global response-token cap (default value: 4096)
 
-When verbose logging or verbose progress reporting is enabled, the extension logs which of these overrides were active for each request.
+When verbose logging or verbose progress reporting is enabled, the extension logs which of these overrides were active for each request. I recommend keeping this enabled in case you want to report a bug. I'll need that to help fix whatever you report.
 
 Copilot instructions and other VS Code-provided instruction layers currently arrive at this provider as system-role chat messages, and this extension preserves those as LM Studio system messages. The custom `lmstudio.systemPrompt` setting is added as another system message ahead of the request when it is non-empty.
 
 **Where can I see prompt progress bar and token count?**: Bottom left of editor window, not in the chat window.
 
-## Performance Tuning
-
-This extension provides a small set of implemented performance tuning features to help manage context windows when working with local LLMs. Feature-specific settings are off by default, while `lmstudio.performanceOptimizations` acts as the master gate and defaults to on.
-
 ### Key Performance Features
 
-1. **Auto-Caveman Prompts** - Adds a concision instruction to the request so the model is nudged toward shorter, denser output
+1. **Tuning and System Prompts** - Set temperature, top-K, top-P, and so forth. Set a default system prompt to prevent repetition, in addition to Copilot Instructions.
 2. **Token Budgeting** - Estimates request size before send, drops or truncates older history when needed, and notifies the user in chat when context is shortened
 3. **Context Overflow Policy** - Lets LM Studio apply `stopAtLimit`, `truncateMiddle`, or `rollingWindow` behavior if a request still exceeds the effective budget after provider-side trimming
 4. **Oversized Request Blocking** - Prevents obviously too-large prompts from being sent to LM Studio by default, while allowing advanced users to disable the block and continue anyway
@@ -131,11 +127,11 @@ When enabled alongside verbose logging, these features emit request-time diagnos
 
 Planner mode is optional and off by default. When enabled, the provider routes the prepared chat history through a local ReAct-style loop instead of sending a single one-shot request to LM Studio. That loop can inspect the workspace, call built-in extension tools, and then return a final answer after it has gathered more context or attempted edits.
 
-You can override the default planner behavior per request:
+You can override the default planner behavior per request, since keeping it on permanently is a personal preference:
 
-1. Start a prompt with `/plan` when you want the planner loop for that message only.
-2. Start a prompt with `/noplan` when you want a direct one-shot response for that message only.
-3. If neither prefix is present, the extension falls back to `lmstudio.planner.enabled`.
+1. Start a prompt with `/plan` when you want the planner loop for that prompt only.
+2. Start a prompt with `/noplan` when you want a direct one-shot response for that prompt only.
+3. If neither prefix is present, the extension falls back to the `lmstudio.planner.enabled` setting.
 
 Current behavior and constraints:
 
@@ -148,38 +144,6 @@ Current behavior and constraints:
 7. Planner mode does not create an interactive Copilot-style plan pane, does not expose VS Code chat tools to the model, and does not guarantee that the model will successfully edit files.
 8. The planner may decide no change is needed, stop after `lmstudio.planner.maxIterations`, or fail on malformed local-model tool output, so it is best treated as an advanced feature that trades latency for extra reasoning and tool execution.
 9. `/plan` and `/noplan` only affect the request they are typed on; they do not change your saved settings.
-
-## Adversarial Review Notes
-
-Current implementation risks worth keeping in mind:
-
-1. Planner mode is intentionally separate from direct LM Studio raw tool-calling, so models will not see VS Code chat tools while planner mode is enabled.
-2. The planner now explains its final outcome in the chat response and surfaces tool calls/results live in the transcript, but it still does not provide a dedicated Copilot-style plan pane with editable step tracking.
-3. Global tuning overrides are requested consistently, but LM Studio or the loaded backend may still clamp unsupported values.
-4. Image-input support is currently inferred from model identifiers, so treat vision capability as heuristic until the provider can verify it more precisely.
-5. The clarification participant is an approximation of Copilot's built-in ask-questions UX, not the same native provider flow. It works through `@lmstudio` chat turns and stored participant metadata.
-
-## Debug Smoke Test
-
-The command `LM Studio: Run Smoke Test (Debug Only)` is intentionally conservative.
-
-1. It forces direct mode even if planner mode is enabled in settings.
-2. It is meant to validate transport, request shaping, filtering, and basic visible output only.
-3. It now expects the exact sentinel response `SMOKE_TEST_OK`; gibberish or partial output is treated as a failure.
-4. It does not count as planner coverage, and the output channel explicitly logs that planner was not exercised.
-
-The companion command `LM Studio: Run Planner Smoke Test (Debug Only)` exercises the planner path with a restricted read-only tool set.
-
-1. It uses the real planner loop rather than the direct response path.
-2. It only exposes `search_workspace` and `read_file` so it cannot write to the workspace.
-3. It expects at least one read-only tool call and the exact sentinel response `PLANNER_SMOKE_TEST_OK`.
-4. It is intended for debugging planner behavior, not for general use.
-
-Current validation status:
-
-1. The direct smoke test and planner smoke test both passed against a LAN-hosted LM Studio instance.
-2. Some local models may still emit one nonconforming planner response before recovering; a single `Could not parse model output, retrying...` log line is acceptable when the planner later reaches a tool call and the final sentinel.
-3. Extra planner telemetry is optional, not required for correctness, because the current output already records iterations, tool calls, and sentinel matching.
 
 ---
 
@@ -326,3 +290,39 @@ npm run lint     # Run linter
 2. Press F5 in VS Code to launch Extension Development Host
 3. Test chat functionality with the LM Studio provider
 4. Optionally enable `lmstudio.planner.enabled` and one `lmstudio.modelTuning.*.enabled` setting to verify planner routing and active tuning logs
+
+---
+
+## Adversarial Review Notes (of course I used AI for a good part of this, and reviewed the code)
+
+Current implementation risks worth keeping in mind:
+
+1. Planner mode is intentionally separate from direct LM Studio raw tool-calling, so models will not see VS Code chat tools while planner mode is enabled.
+2. The planner now explains its final outcome in the chat response and surfaces tool calls/results live in the transcript, but it still does not provide a dedicated Copilot-style plan pane with editable step tracking.
+3. Global tuning overrides are requested consistently, but LM Studio or the loaded backend may still clamp unsupported values.
+4. Image-input support is currently inferred from model identifiers, so treat vision capability as heuristic until the provider can verify it more precisely.
+5. The clarification participant is an approximation of Copilot's built-in ask-questions UX, not the same native provider flow. It works through `@lmstudio` chat turns and stored participant metadata.
+
+## Debug Smoke Tests (for testing purposes, will be added/removed in future releases)
+
+The command `LM Studio: Run Smoke Test (Debug Only)` is intentionally conservative.
+
+1. It forces direct mode even if planner mode is enabled in settings.
+2. It is meant to validate transport, request shaping, filtering, and basic visible output only.
+3. It now expects the exact sentinel response `SMOKE_TEST_OK`; gibberish or partial output is treated as a failure.
+4. It does not count as planner coverage, and the output channel explicitly logs that planner was not exercised.
+
+The companion command `LM Studio: Run Planner Smoke Test (Debug Only)` exercises the planner path with a restricted read-only tool set.
+
+1. It uses the real planner loop rather than the direct response path.
+2. It only exposes `search_workspace` and `read_file` so it cannot write to the workspace.
+3. It expects at least one read-only tool call and the exact sentinel response `PLANNER_SMOKE_TEST_OK`.
+4. It is intended for debugging planner behavior, not for general use.
+
+Current validation status:
+
+1. The direct smoke test and planner smoke test both passed against a LAN-hosted LM Studio instance.
+2. Some local models may still emit one nonconforming planner response before recovering; a single `Could not parse model output, retrying...` log line is acceptable when the planner later reaches a tool call and the final sentinel.
+3. Extra planner telemetry is optional, not required for correctness, because the current output already records iterations, tool calls, and sentinel matching.
+
+The results of these smoke tests also help if you're running into bugs.
