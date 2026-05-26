@@ -5,12 +5,12 @@
 	],
 	"publisher": "AuriRahimzadeh",
 	"displayName": "LM Studio BYOK Chat Provider (Auri Update)",
-	"description": "Bring your own LM Studio instance to use local LLM models in GitHub Copilot Chat. Updated to use the latest LM Studio API and such by Auri Rahimzadeh, based on an older extension by Pierce Boggan. This extension connects to your LM Studio server to provide language model responses directly within GitHub Copilot Chat, allowing you to leverage local LLMs for code generation, explanations, and more. Cool logging features enable you to see detailed request/response info and token usage in the 'LM Studio' output channel. You can even play a cheesy sound when you 'spend' a lot of tokens. Configure your LM Studio connection settings in the extension settings to get started.",
+	"description": "Bring your own LM Studio instance to use local LLM models in GitHub Copilot Chat. This extension connects to your LM Studio server to provide language model responses directly within GitHub Copilot Chat, allowing you to leverage local LLMs for code generation, explanations, and more. Cool logging features enable you to see detailed request/response info and token usage in the 'LM Studio' output channel. You can even play a cheesy sound when you 'spend' a lot of tokens. Configure your LM Studio connection settings in the extension settings to get started.",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/AuriR/lmstudio-byok"
 	},
-	"version": "0.4.3",
+	"version": "0.5.10",
 	"engines": {
 		"vscode": "^1.103.0-20250721"
 	},
@@ -27,12 +27,27 @@
 			"description": "Main extension interface showing model selection and connection status",
 			"path": "images/screenshot_1.png"
 		}
-	],
+	],	
 	"galleryBanner": {
 		"color": "#C4C4C4",
 		"theme": "dark"
 	},
 	"contributes": {
+		"chatParticipants": [
+			{
+				"id": "lmstudio-byok-chat-provider-auri.lmstudio",
+				"name": "lmstudio",
+				"fullName": "LM Studio",
+				"description": "Ask LM Studio and let it request one missing detail before it proceeds",
+				"isSticky": true,
+				"commands": [
+					{
+						"name": "clarify",
+						"description": "Route the prompt through LM Studio with a clarification checkpoint"
+					}
+				]
+			}
+		],
 		"languageModelChatProviders": [
 			{
 				"vendor": "lmstudio",
@@ -51,14 +66,25 @@
 				"category": "LM Studio"
 			},
 			{
-				"command": "lmstudio.showWelcome",
-				"title": "Show Welcome",
+				"command": "lmstudio.showDocumentation",
+				"title": "Show Documentation",
+				"category": "LM Studio"
+			},
+			{
+				"command": "lmstudio.runSmokeTest",
+				"title": "Run Smoke Test (Debug Only)",
+				"category": "LM Studio"
+			},
+			{
+				"command": "lmstudio.runPlannerSmokeTest",
+				"title": "Run Planner Smoke Test (Debug Only)",
 				"category": "LM Studio"
 			}
 		],
-		"configuration": {
-			"title": "LM Studio",
-			"properties": {
+		"configuration": [
+			{
+				"title": "LM Studio",
+				"properties": {
 				"lmstudio.baseUrl": {
 					"type": "string",
 					"default": "ws://localhost:1234",
@@ -66,36 +92,196 @@
 				},
 				"lmstudio.apiKey": {
 					"type": "string",
-					"description": "Your LM Studio API key (optional for local instances). You can also set this via the LMSTUDIO_API_KEY environment variable.",
+					"description": "🔑 Your LM Studio API key (optional for local instances). You can also set this via the LMSTUDIO_API_KEY environment variable.",
 					"scope": "application"
 				},
 				"lmstudio.verboseLogging": {
 					"type": "boolean",
 					"default": false,
-					"description": "Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting.",
+					"description": "🛠️ Enable verbose diagnostic logging to the 'LM Studio' output channel for troubleshooting.",
 					"scope": "application"
 				},
 				"lmstudio.verboseProgressReporting": {
 					"type": "boolean",
 					"default": false,
-					"description": "Show detailed LM Studio prompt/generation progress in the status bar and output channel.",
+					"description": "📈 Show detailed LM Studio prompt/generation progress in the status bar and output channel.",
 					"scope": "application"
 				},
 				"lmstudio.playTokenThresholdSound": {
 					"type": "boolean",
 					"default": false,
-					"description": "Play a short cash-register style completion sound when a request exceeds the configured token threshold. Currently implemented for Windows.",
+					"description": "🔊 Play a short cash-register style completion sound when a request exceeds the configured token threshold. Currently implemented for Windows.",
 					"scope": "application"
 				},
 				"lmstudio.tokenSoundThreshold": {
 					"type": "number",
 					"default": 10000,
 					"minimum": 1,
-					"description": "Approximate total token count required before the completion sound plays.",
+					"description": "🔊 Approximate total token count required before the completion sound plays.",
+					"scope": "application"
+				},
+				"lmstudio.autoCavemanPrompts": {
+					"type": "boolean",
+					"default": false,
+					"description": "🗿 Prepend a system instruction asking the model to be concise while preserving essentials. This is a behavior hint, not a true prompt compaction pass.",
+					"scope": "application"
+				},
+				"lmstudio.performanceOptimizations": {
+					"type": "boolean",
+					"default": true,
+					"description": "⚡ Master gate for the implemented performance features. When false, feature-specific settings such as auto-caveman prompts and token budgeting are ignored.",
+					"scope": "application"
+				},
+				"lmstudio.tokenBudgeting": {
+					"type": "boolean",
+					"default": false,
+					"description": "💰 Estimate request token usage before send and log a warning when the prompt approaches the model context window.",
+					"scope": "application"
+				},
+				"lmstudio.contextOverflowPolicy": {
+					"type": "string",
+					"default": "truncateMiddle",
+					"enum": [
+						"stopAtLimit",
+						"truncateMiddle",
+						"rollingWindow"
+					],
+					"enumDescriptions": [
+						"Stop generation when the context window limit is reached.",
+						"Keep the system prompt and first user message, then truncate the middle when LM Studio needs to shorten context.",
+						"Use LM Studio's rolling window behavior to trim older context as needed."
+					],
+					"markdownDescription": "🪟 Select how LM Studio should handle context overflow if a request still exceeds the effective budget after provider-side trimming.",
+					"scope": "application"
+				},
+				"lmstudio.blockOversizedRequests": {
+					"type": "boolean",
+					"default": true,
+					"description": "🛑 Block requests locally when they still exceed the estimated prompt budget after trimming. Disable this to let LM Studio attempt the request even if it may fail.",
+					"scope": "application"
+				},
+				"lmstudio.toggleAllPerformance": {
+					"type": "boolean",
+					"default": false,
+					"description": "💯 Toggle all currently implemented performance features on or off at once.",
+					"scope": "application"
+				},
+				"lmstudio.planner.enabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "🧠 Enable the planning agent. When enabled, requests are routed through a ReAct-style planner that can use tools (file read/write, workspace search, VS Code commands) before returning a final answer.",
+					"scope": "application"
+				},
+				"lmstudio.planner.maxIterations": {
+					"type": "number",
+					"default": 10,
+					"minimum": 1,
+					"maximum": 50,
+					"description": "🔄 Maximum number of planning iterations (tool call → execute → feed back) before returning a result.",
+					"scope": "application"
+				},
+				"lmstudio.planner.maxToolResultTokens": {
+					"type": "number",
+					"default": 8000,
+					"minimum": 1000,
+					"description": "📏 Maximum token budget for individual tool result content fed back into context.",
+					"scope": "application"
+				},
+				"lmstudio.planner.fyiInstructionPath": {
+					"type": "string",
+					"default": "",
+					"description": "📄 Absolute path to an FYI instruction file to inject into the agent's system prompt before planning begins. Leave empty to skip injection.",
 					"scope": "application"
 				}
+				}
+			},
+			{
+				"title": "LM Studio > Model Tuning",
+				"properties": {
+					"lmstudio.modelTuning.temperature.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global temperature override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.temperature.value": {
+						"type": "number",
+						"default": 0.7,
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Temperature override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topP.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global top-p override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topP.value": {
+						"type": "number",
+						"default": 0.8,
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Top-p override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topK.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global top-k override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.topK.value": {
+						"type": "number",
+						"default": 20,
+						"minimum": 1,
+						"description": "Top-k override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.minP.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global min-p override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.minP.value": {
+						"type": "number",
+						"default": 0.05,
+						"minimum": 0,
+						"maximum": 1,
+						"description": "Min-p override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.repetitionPenalty.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global repetition penalty override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.repetitionPenalty.value": {
+						"type": "number",
+						"default": 1.2,
+						"minimum": 0,
+						"description": "Repetition penalty override value. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.maxTokensInResponse.enabled": {
+						"type": "boolean",
+						"default": false,
+						"description": "Enable a global max tokens in response override for all LM Studio responses.",
+						"scope": "application"
+					},
+					"lmstudio.modelTuning.maxTokensInResponse.value": {
+						"type": "number",
+						"default": 4096,
+						"minimum": 1,
+						"description": "Maximum generated tokens to allow in a response. Only applied when the corresponding enable setting is checked.",
+						"scope": "application"
+					}
+				}
 			}
-		}
+		]
 	},
 	"main": "./out/extension.js",
 	"scripts": {

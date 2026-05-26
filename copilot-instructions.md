@@ -58,9 +58,26 @@ These instructions guide the AI agent on coding style, design philosophy, and be
 2. **Token Threshold Notifications**: Add configurable sound notifications for high-token usage scenarios
 3. **Error Handling**: Gracefully handle connection issues, model loading problems, and API inconsistencies
 4. **Configuration-Driven Features**: Make all enhanced features configurable via VS Code settings
+5. **Performance Optimization Features**: Implement toggleable performance optimizations including token budgeting, auto-caveman prompts, and rolling summaries that can be enabled/disabled through VS Code settings to allow users to test and compare performance impact
+
+### Planner Mode Documentation Expectations
+1. **What Planner Mode Does**: User-facing docs should explain that planner mode routes a request through a local planning loop that can inspect the workspace and use the extension's built-in tools before returning a final answer
+2. **What Planner Mode Does Not Do**: User-facing docs should explicitly state that planner mode does not create a dedicated Copilot-style plan pane, does not expose VS Code chat tools directly to the model, and does not guarantee a successful file edit
+3. **Planner Telemetry**: When documenting planner progress, note that verbose progress reporting can show `Planner running...` with prompt progress and tokens-per-second while the planner is active
+4. **Consistency Across Surfaces**: Keep README, Architecture.md, and the extension's Documentation window aligned whenever planner mode behavior or wording changes
+5. **Slash Command Scope**: Document `/lmsplan` and `/lmsnoplan` as per-request routing overrides, but document `/lmsmaxtokens <number>` as a session-scoped response-cap override that remains active for later LM Studio requests until changed again, cleared with `/lmsmaxtokensreset`, or discarded by reloading VS Code
+6. **Token Cap Messaging**: When documenting `/lmsmaxtokens`, mention that chat reports the previous effective cap and the new active cap when the session override changes, and that a best-effort warning appears if a reply likely stopped because the cap was too low
 
 ### Testing Considerations
 1. **Local Environment Testing**: Always test with actual LM Studio instances to verify functionality
 2. **Model Context Verification**: Verify that context length metadata accurately reflects loaded models
 3. **Role Mapping Validation**: Test that system messages are correctly preserved through the conversion process
-4. **Feature Toggle Testing**: Ensure optional features (progress reporting, sounds) work correctly when enabled/disabled
+4. **Feature Toggle Testing**: Ensure optional features (progress reporting, sounds, performance optimizations) work correctly when enabled/disabled
+
+## 📦 Constants Management
+1. **Centralize Reused Strings**: Any string, ID, or value that is referenced in multiple places across the codebase must live in `src/constants.ts`. This includes VS Code setting keys, command IDs, status/error model IDs, context overflow policies, tool names, display strings, regex patterns, and default values.
+2. **Naming Convention**: Use `SETTING_<KEY>` for VS Code configuration keys (e.g., `SETTING_BASE_URL`), `COMMAND_<NAME>` for command IDs (e.g., `COMMAND_REFRESH_MODELS`), `STATUS_<DESC>` for status/error IDs (e.g., `STATUS_CONNECTION_ERROR`), `POLICY_<NAME>` for policy strings (e.g., `POLICY_TRUNCATE_MIDDLE`), `TOOL_<NAME>` for tool names (e.g., `TOOL_READ_FILE`), `*_PATTERN` for regex patterns, and `DEFAULT_<DESC>` for default values.
+3. **Grouping**: Organize constants in `src/constants.ts` into clearly labeled sections (Settings, Commands, Status, Policies, Tools, Display, Patterns, Defaults, etc.) with blank-line separators.
+4. **What NOT to centralize**: VS Code contribution points in `package.json` must remain as literal strings (they are part of the extension manifest contract). Documentation strings in `README.md` and user-facing docs should remain as literals. Default configuration objects embedded in code (e.g., `vscode.workspace.getConfiguration()` default values) may stay inline if they are tightly coupled to a single function.
+5. **Import, Don't Duplicate**: When a file needs a constant, import it from `src/constants.ts` rather than redefining it locally. Never copy-paste a constant value into a new file.
+6. **Type Safety**: For string literal types used as discriminated unions (e.g., `ContextOverflowPolicy`), reference the constants in the type definition using `typeof` to keep the type in sync with the values.
